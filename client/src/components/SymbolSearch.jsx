@@ -1,154 +1,135 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 
-const INSTRUMENTS = [
-  { symbol: 'NIFTY50', exchange: 'NSE', category: 'Indices', live: true },
-  { symbol: 'BANKNIFTY', exchange: 'NSE', category: 'Indices', live: true },
-  { symbol: 'NIFTY NEXT 50', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY MIDCAP 100', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY FINANCIAL SERVICES', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY IT', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY PHARMA', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY AUTO', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY FMCG', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY METAL', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY MEDIA', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY REALTY', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY ENERGY', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY PSU BANK', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY PRIVATE BANK', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY CONSUMER DURABLES', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY HEALTHCARE', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'NIFTY OIL & GAS', exchange: 'NSE', category: 'Indices' },
-  { symbol: 'INDIA VIX', exchange: 'NSE', category: 'Indices' },
+const CATEGORIES = ['All', 'Stocks', 'Futures', 'Options', 'Commodities']
 
-  { symbol: 'RELIANCE', exchange: 'NSE', category: 'Stocks', live: true },
-  { symbol: 'TCS', exchange: 'NSE', category: 'Stocks', live: true },
-  { symbol: 'HDFC BANK', exchange: 'NSE', category: 'Stocks', live: true },
-  { symbol: 'INFY', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'ICICI BANK', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'HINDUNILVR', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'ITC', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'SBIN', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'BHARTIARTL', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'KOTAKBANK', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'BAJFINANCE', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'DMART', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'MARUTI', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'TATAMOTORS', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'TATASTEEL', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'AXISBANK', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'LT', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'WIPRO', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'HCLTECH', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'SUNPHARMA', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'CIPLA', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'DRREDDY', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'NESTLEIND', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'TITAN', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'BAJAJFINSV', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'ASIANPAINT', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'ULTRACEMCO', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'ADANIENT', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'ADANIPORTS', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'ONGC', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'NTPC', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'POWERGRID', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'M&M', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'SBILIFE', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'HDFC', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'JSW STEEL', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'TATACONSUM', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'BAJAJ-AUTO', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'EICHERMOT', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'COALINDIA', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'BRITANNIA', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'HINDALCO', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'DIVISLAB', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'GRASIM', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'HEROMOTOCO', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'APOLLOHOSP', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'TECHM', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'INDUSINDBK', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'BPCL', exchange: 'NSE', category: 'Stocks' },
-  { symbol: 'HDFCLIFE', exchange: 'NSE', category: 'Stocks' },
+function getCategoryFilter(category) {
+  switch (category) {
+    case 'Stocks': return 'type=EQ'
+    case 'Futures': return 'type=FUT'
+    case 'Options': return 'type=OPT'
+    case 'Commodities': return 'exchange=MCX'
+    default: return ''
+  }
+}
 
-  { symbol: 'CRUDE OIL', exchange: 'MCX', category: 'Futures', live: true },
-  { symbol: 'GOLD', exchange: 'MCX', category: 'Futures' },
-  { symbol: 'SILVER', exchange: 'MCX', category: 'Futures' },
-  { symbol: 'NATURALGAS', exchange: 'MCX', category: 'Futures' },
-  { symbol: 'COPPER', exchange: 'MCX', category: 'Futures' },
-  { symbol: 'ALUMINIUM', exchange: 'MCX', category: 'Futures' },
-  { symbol: 'LEAD', exchange: 'MCX', category: 'Futures' },
-  { symbol: 'ZINC', exchange: 'MCX', category: 'Futures' },
-]
+function getGroupKey(item) {
+  const type = item.instrument_type || ''
+  const key = item.instrument_key || ''
+  if (type.includes('INDEX') || key.includes('INDEX')) return 'INDICES'
+  switch (type) {
+    case 'EQ': return 'STOCKS'
+    case 'FUT': return 'FUTURES'
+    case 'OPT': return 'OPTIONS'
+    default: return type
+  }
+}
 
-const CATEGORIES = ['All', 'Stocks', 'Futures', 'Indices']
+const GROUP_ORDER = ['STOCKS', 'FUTURES', 'OPTIONS', 'INDICES']
 
 export default function SymbolSearch({ isOpen, onClose, onSelect }) {
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState('NIFTY50')
   const [category, setCategory] = useState('All')
+  const [results, setResults] = useState([])
+  const [loading, setLoading] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const inputRef = useRef(null)
-  const debounceRef = useRef(null)
 
-  const filtered = useMemo(() => {
-    let list = category === 'All'
-      ? INSTRUMENTS
-      : INSTRUMENTS.filter(i => i.category === category)
-    if (query.trim()) {
-      const q = query.toLowerCase()
-      list = list.filter(i =>
-        i.symbol.toLowerCase().includes(q) ||
-        i.exchange.toLowerCase().includes(q)
-      )
+  // ── Debounced API search (300ms) ──
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([])
+      return
     }
-    return list
+    const timer = setTimeout(async () => {
+      setLoading(true)
+      try {
+        let url = `/api/instruments/search?q=${encodeURIComponent(query)}`
+        const filter = getCategoryFilter(category)
+        if (filter) url += `&${filter}`
+        const res = await fetch(url)
+        const data = await res.json()
+        setResults(data.results || [])
+      } catch {
+        // silently ignore network errors
+      } finally {
+        setLoading(false)
+      }
+    }, 300)
+    return () => clearTimeout(timer)
   }, [query, category])
 
+  // reset selection on results change
   useEffect(() => {
     setSelectedIdx(0)
-  }, [query, category])
+  }, [results])
 
-  const commitSelect = useCallback((item) => {
-    onSelect(item.symbol)
-    onClose()
-  }, [onSelect, onClose])
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setSelectedIdx(prev => Math.min(prev + 1, filtered.length - 1))
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setSelectedIdx(prev => Math.max(prev - 1, 0))
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      if (filtered[selectedIdx]) commitSelect(filtered[selectedIdx])
-    } else if (e.key === 'Escape') {
-      onClose()
-    }
-  }
-
-  const handleChange = (e) => {
-    const val = e.target.value
-    clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => setQuery(val), 200)
-  }
-
+  // reset state when opening the modal
   useEffect(() => {
     if (isOpen) {
-      setQuery('')
+      setQuery('NIFTY50')
       setCategory('All')
+      setResults([])
+      setLoading(false)
       setSelectedIdx(0)
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [isOpen])
 
-  useEffect(() => {
-    return () => clearTimeout(debounceRef.current)
-  }, [])
+  const commitSelect = useCallback((item) => {
+    onSelect(item.tradingsymbol, item.instrument_key)
+    onClose()
+  }, [onSelect, onClose])
+
+  // ── Group results by instrument type ──
+  const grouped = useMemo(() => {
+    const map = {}
+    for (const item of results) {
+      const key = getGroupKey(item)
+      if (!map[key]) map[key] = []
+      map[key].push(item)
+    }
+    // maintain a consistent group order
+    const ordered = {}
+    for (const g of GROUP_ORDER) {
+      if (map[g]) ordered[g] = map[g]
+    }
+    // add any remaining groups (e.g. unknown types) sorted alphabetically
+    const remaining = Object.keys(map).filter(g => !GROUP_ORDER.includes(g)).sort()
+    for (const g of remaining) {
+      ordered[g] = map[g]
+    }
+    return ordered
+  }, [results])
+
+  const flatResults = useMemo(() => {
+    return Object.values(grouped).flat()
+  }, [grouped])
+
+  // ── Render helpers ──
+
+  const handleChange = (e) => {
+    setQuery(e.target.value)
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setSelectedIdx(prev => Math.min(prev + 1, flatResults.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setSelectedIdx(prev => Math.max(prev - 1, 0))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (flatResults[selectedIdx]) commitSelect(flatResults[selectedIdx])
+    } else if (e.key === 'Escape') {
+      onClose()
+    }
+  }
 
   if (!isOpen) return null
+
+  // track global offset across groups for keyboard nav
+  let groupOffset = 0
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh]" onClick={onClose}>
@@ -203,7 +184,7 @@ export default function SymbolSearch({ isOpen, onClose, onSelect }) {
               </svg>
               {query && (
                 <button
-                  onClick={() => { setQuery(''); inputRef.current?.focus() }}
+                  onClick={() => { setQuery(''); }}
                   style={{
                     position: 'absolute', right: '10px', top: '10px',
                     width: '28px', height: '28px', display: 'flex',
@@ -260,54 +241,89 @@ export default function SymbolSearch({ isOpen, onClose, onSelect }) {
 
         {/* ── Results ── */}
         <div className="flex-1 overflow-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#3A3A3A transparent' }}>
-          {filtered.length === 0 ? (
+          {/* Loading state */}
+          {loading && (
+            <div style={{ padding: '24px 24px', color: '#8A8A8A', textAlign: 'center', fontSize: '13px' }}>
+              Searching...
+            </div>
+          )}
+
+          {/* No results after search */}
+          {!loading && flatResults.length === 0 && query.trim() && (
             <div style={{ padding: '32px 24px', color: '#8A8A8A', textAlign: 'center', fontSize: '14px' }}>
               No results found
             </div>
-          ) : (
-            filtered.map((item, idx) => (
-              <div
-                key={item.symbol + item.exchange}
-                onClick={() => commitSelect(item)}
-                onMouseEnter={() => setSelectedIdx(idx)}
-                style={{
-                  padding: '10px 24px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  transition: 'background 100ms',
-                  background: idx === selectedIdx ? '#2A2A2A' : 'transparent',
-                  borderLeft: idx === selectedIdx ? '3px solid #4f9cf9' : '3px solid transparent',
-                }}
-                role="option"
-                aria-selected={idx === selectedIdx}
-              >
-                <div className="flex items-center gap-3">
-                  <div>
-                    <div style={{ fontWeight: 600, color: '#FFFFFF', fontSize: '15px' }}>
-                      {item.symbol}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#8A8A8A', marginTop: '1px' }}>
-                      {item.exchange} &middot; {item.category}
-                    </div>
-                  </div>
-                  {item.live && (
-                    <span style={{
-                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px',
-                      color: '#26a69a', border: '1px solid #26a69a44',
-                      borderRadius: '4px', padding: '1px 6px', lineHeight: '16px',
-                    }}>
-                      LIVE
-                    </span>
-                  )}
-                </div>
-                <span style={{ fontSize: '12px', color: '#5A5A5A' }}>
-                  {item.exchange}
-                </span>
-              </div>
-            ))
           )}
+
+          {/* Empty state before search */}
+          {!loading && !query.trim() && (
+            <div style={{ padding: '32px 24px', color: '#8A8A8A', textAlign: 'center', fontSize: '14px' }}>
+              Type to search symbols
+            </div>
+          )}
+
+          {/* Grouped results */}
+          {Object.entries(grouped).map(([group, items]) => {
+            const groupStartIdx = groupOffset
+            groupOffset += items.length
+            return (
+              <div key={group}>
+                <div
+                  style={{
+                    padding: '8px 24px 6px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    letterSpacing: '0.8px',
+                    color: '#8A8A8A',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {group}
+                </div>
+                {items.map((item, idx) => {
+                  const globalIdx = groupStartIdx + idx
+                  return (
+                    <div
+                      key={item.instrument_key}
+                      onClick={() => commitSelect(item)}
+                      onMouseEnter={() => setSelectedIdx(globalIdx)}
+                      style={{
+                        padding: '10px 24px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        transition: 'background 100ms',
+                        background: globalIdx === selectedIdx ? '#2A2A2A' : 'transparent',
+                        borderLeft: globalIdx === selectedIdx ? '3px solid #4f9cf9' : '3px solid transparent',
+                      }}
+                      role="option"
+                      aria-selected={globalIdx === selectedIdx}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div>
+                          <div style={{ fontWeight: 600, color: '#FFFFFF', fontSize: '15px' }}>
+                            {item.tradingsymbol}
+                          </div>
+                          {item.name && (
+                            <div style={{ fontSize: '12px', color: '#8A8A8A', marginTop: '1px', maxWidth: '420px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {item.name}
+                            </div>
+                          )}
+                          <div style={{ fontSize: '11px', color: '#5A5A5A', marginTop: '1px' }}>
+                            {item.exchange} &middot; {item.instrument_type}
+                          </div>
+                        </div>
+                      </div>
+                      <span style={{ fontSize: '12px', color: '#5A5A5A', flexShrink: 0, marginLeft: '12px' }}>
+                        {item.exchange}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })}
           <div style={{ height: '12px' }} />
         </div>
       </div>

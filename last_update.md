@@ -1,6 +1,6 @@
 # Last Update — Project Status
 
-**Date:** Saturday, June 27, 2026
+**Date:** Sunday, June 28, 2026
 
 ---
 
@@ -40,8 +40,21 @@ Convert the static HTML dashboard to a React + Tailwind CSS application and fix 
 - **Real-time ticks** — Upstox V3 WebSocket with protobuf decoding pushed to browser
 - **Historical candles** — V3 intraday fallback → V2 1min (5-day) → demo synthetic
 - **Timeframe aggregation** — `aggregateCandles()` buckets 1min data into 5m, 15m, 1h, 1d
-- **3 chart types** — Candles, Line, Area
-- **Ticker strip** — 6 instruments, color-coded P&L, click to switch
+- **12 chart styles** — Candles, Hollow, Volume, Heikin Ashi, Bars, Line, Line+Markers, Step Line, Area, HLC Area, Baseline, Columns
+- **Multi-chart layouts** — Single, Side-by-side, Stacked, Grid (2×2)
+- **Ticker strip** — Watchlist items, color-coded P&L, click to switch
+- **Resizable right sidebar** — Collapsible (double-click splitter), persisted in localStorage
+- **Vertical price scale zoom** — Scroll over Y-axis stretches/compresses candles only
+- **Volume panel removed** — Candle chart uses full chart height
+- **Drawing tools** — Trend Line, Horizontal/Vertical Line, Ray, Rectangle, Fibonacci, Text Label, Eraser
+- **Indicators** — SMA, EMA, VWAP, ATR, SuperTrend, RSI, Stochastic, MACD, Bollinger Bands, OBV, Volume MA
+- **Replay mode** — Step through historical candle data
+- **Context menu** — Right-click reset chart
+- **Watchlist panel** — Add/remove symbols, auto-populates first 6 from instrument list
+- **Search modal** — Debounced search with category filtering, default query "NIFTY50"
+- **Auto-select NIFTY** — On symbol map load, picks NIFTY (exact match first, then prefix)
+- **Scroll wheel zoom** — Native lightweight-charts zoom (UP=zoom IN, DOWN=zoom OUT)
+- **Symbol persistence** — Per-chart symbol saved across page reloads
 - **Manual signals** — BUY/SELL/INFO buttons send alerts to Make.com
 - **Strategies** — Manual, EMA Crossover, RSI Threshold, Price Breakout, Custom Note
 - **Alert log** — Scrollable log with color-coded entries
@@ -69,10 +82,15 @@ upstox-dashboard/
         ├── App.jsx             ← Root: WS connect, mode toggle, state management
         ├── index.css           ← Tailwind directives + base styles
         ├── components/
-        │   ├── TopBar.jsx      ← LIVE/DEMO buttons, active symbol, connection dot, clock
-        │   ├── TickerStrip.jsx ← Horizontal price strip with P&L coloring
-        │   ├── ChartPanel.jsx  ← lightweight-charts with real-time candles + timeframe aggregation
-        │   └── Sidebar.jsx     ← Strategy panel, alert log, webhook status
+    │   ├── TopBar.jsx      ← LIVE/DEMO buttons, active symbol, layout switcher, watchlist toggle
+    │   ├── TickerStrip.jsx ← Horizontal price strip with P&L coloring
+    │   ├── ChartPanel.jsx  ← lightweight-charts with candles, indicators, drawings, replay
+    │   ├── Sidebar.jsx     ← Trading panel, strategy runner, webhook log
+    │   ├── TradingPanel.jsx ← Order form, strategy config, signal buttons
+    │   ├── DrawingTools.jsx ← Left-side tool strip (Trend Line, Fib, etc.)
+    │   ├── CandleSelector.jsx ← Chart style picker dropdown
+    │   ├── Watchlist.jsx  ← Left-side watchlist panel with add/remove
+    │   └── SymbolSearch.jsx ← Modal search with NIFTY50 default and category filter
         └── dist/               ← Built frontend (served by server.js)
 ```
 
@@ -84,6 +102,10 @@ upstox-dashboard/
 3. **Demo mode server-side** — Server runs `setInterval` generating synthetic ticks; toggled via `POST /api/mode`
 4. **lightweight-charts v4.1.3** — Pinned to v4 (not v5) because v5 renamed `addCandlestickSeries()` to `addSeries(SeriesType, options)`
 5. **Direct WS in dev** — Dev mode connects to `localhost:3000` directly (not through Vite proxy) because Vite can't proxy root WebSocket upgrades
+6. **Custom wheel handler** — `handleScale.mouseWheel: false`; custom handler detects cursor over right price scale → vertical-only zoom (scaleMargins), over chart area → both axes
+7. **Resizable sidebar** — Splitter div with `cursor-col-resize`, `mousedown`/`touchstart` drag, double-click collapse/expand, width/state persisted in `localStorage`
+8. **NIFTY50 default search** — SymbolSearch uses initial query `NIFTY50` + `key` prop remount to avoid race conditions
+9. **Auto-select "NIFTY"** — After instrument map loads, picks exact "NIFTY" → first "NIFTY…" prefix → first key as default chart symbol
 
 ---
 
@@ -122,6 +144,8 @@ npm start
 - Demo mode: Synthetic ticks generated at 1s interval with random walks
 - **Market closed** (Saturday) — real ticks will flow Monday when market opens
 - Token valid until June 2027
+- Volume panel removed — candle chart uses full height
+- Vertical price scale zoom via custom wheel handler (price scale only: scaleMargins, chart area: both axes)
 
 ---
 

@@ -4,6 +4,8 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const path = require('path');
 const protobuf = require('protobufjs');
+const https = require('https');
+const { createGunzip } = require('zlib');
 
 const app = express();
 app.use(express.json());
@@ -17,29 +19,105 @@ const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const wss = new WebSocket.Server({ noServer: true });
 
 let upstoxWS = null;
-let demoInterval = null;
-let currentMode = 'live';
 const browserClients = new Set();
+let instrumentsLoaded = false;
 
-// Instruments map: key = display name, value = Upstox instrument key
-const INSTRUMENTS = {
-  'NIFTY50':    'NSE_INDEX|Nifty 50',
-  'BANKNIFTY':  'NSE_INDEX|Nifty Bank',
-  'RELIANCE':   'NSE_EQ|INE002A01018',
-  'TCS':        'NSE_EQ|INE467B01029',
-  'HDFC BANK':  'NSE_EQ|INE040A01034',
-  'CRUDE OIL':  'MCX_FO|CRUDEOIL',
-};
+// Dynamic instrument data from JSON (populated at startup)
+const instrumentsByKey = new Map();
+const instrumentsList = [];
 
-// Reverse map: instrument key -> display name
-const KEY_TO_SYMBOL = {};
-for (const [sym, key] of Object.entries(INSTRUMENTS)) {
-  KEY_TO_SYMBOL[key] = sym;
-}
+// instrument_key → tradingsymbol (for feed decoder)
+const keyToSymbol = {};
+
+// tradingsymbol → instrument_key (for API lookups)
+const symbolToKey = {};
+
+// Set of currently subscribed instrument keys (populated by frontend)
+const subscribedKeys = new Set();
 
 // Load Upstox V3 protobuf definition
 const protoRoot = protobuf.loadSync(path.join(__dirname, 'MarketDataFeed.proto'));
 const FeedResponse = protoRoot.lookupType('FeedResponse');
+
+// ─── JSON Download & Indexing ──────────────────────────────────────────────────
+
+const INSTRUMENT_JSON_URL = 'https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz';
+
+function downloadGzippedJSON(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode} for ${url}`));
+        return;
+      }
+      const chunks = [];
+      const gunzip = createGunzip();
+      res.pipe(gunzip);
+      gunzip.on('data', chunk => chunks.push(chunk));
+      gunzip.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        try {
+          const records = JSON.parse(buffer.toString('utf8'));
+          resolve(records);
+        } catch (parseErr) {
+          reject(new Error(`JSON parse error: ${parseErr.message}`));
+        }
+      });
+      gunzip.on('error', reject);
+    }).on('error', (err) => {
+      reject(err);
+    });
+  });
+}
+
+function indexInstruments(records) {
+  let added = 0;
+  for (const rec of records) {
+    const key = rec.instrument_key;
+    if (!key) continue;
+    if (!instrumentsByKey.has(key)) {
+      const normalized = {
+        instrument_key: key,
+        tradingsymbol: rec.trading_symbol || key,
+        name: rec.name || '',
+        exchange: rec.exchange || '',
+        instrument_type: rec.instrument_type || '',
+        expiry: rec.expiry ? (typeof rec.expiry === 'number' ? new Date(rec.expiry * 1000).toISOString().split('T')[0] : rec.expiry) : '',
+        strike: rec.strike_price || '',
+        lot_size: rec.lot_size || 1,
+      };
+      instrumentsByKey.set(key, normalized);
+      instrumentsList.push(normalized);
+      const tsym = normalized.tradingsymbol;
+      if (!keyToSymbol[key]) keyToSymbol[key] = tsym;
+      if (!symbolToKey[tsym]) symbolToKey[tsym] = key;
+      added++;
+    }
+  }
+  return added;
+}
+
+async function loadInstruments() {
+  try {
+    console.log(`📥 Downloading instruments JSON...`);
+    const records = await downloadGzippedJSON(INSTRUMENT_JSON_URL);
+    const count = indexInstruments(records);
+    console.log(`   ✓ ${count} instruments indexed from JSON`);
+  } catch (err) {
+    console.warn(`⚠️  Failed to download/parse instruments JSON: ${err.message}`);
+  }
+  instrumentsLoaded = true;
+  console.log(`\n📊 Total instruments indexed: ${instrumentsByKey.size}\n`);
+}
+
+// Start loading instruments asynchronously (server can start before JSON loads)
+loadInstruments();
+
+// ─── Upstox Feed Decoder & WebSocket Helpers ─────────────────────────────────
 
 function decodeUpstoxFeed(raw) {
   const decoded = FeedResponse.decode(raw);
@@ -47,7 +125,7 @@ function decodeUpstoxFeed(raw) {
   if (!decoded.feeds) return ticks;
 
   for (const [instKey, feed] of Object.entries(decoded.feeds)) {
-    const symbol = KEY_TO_SYMBOL[instKey];
+    const symbol = keyToSymbol[instKey];
     if (!symbol) continue;
 
     const ltpc = feed.ltpc || feed.fullFeed?.marketFF?.ltpc || feed.fullFeed?.indexFF?.ltpc;
@@ -71,9 +149,26 @@ function decodeUpstoxFeed(raw) {
   return ticks;
 }
 
+function sendUpstoxSubscription() {
+  if (upstoxWS && upstoxWS.readyState === WebSocket.OPEN) {
+    const keys = Array.from(subscribedKeys);
+    if (keys.length === 0) return;
+    const subMsg = {
+      guid: 'dashboard-sub',
+      method: 'sub',
+      data: {
+        mode: 'full',
+        instrumentKeys: keys,
+      },
+    };
+    upstoxWS.send(JSON.stringify(subMsg));
+    console.log(`📡 Subscribed to ${keys.length} instrument(s)`);
+  }
+}
+
 async function connectUpstox() {
   if (!ACCESS_TOKEN || ACCESS_TOKEN === 'YOUR_UPSTOX_ACCESS_TOKEN_HERE') {
-    console.log('⚠️  No Upstox token set — running in DEMO mode');
+    console.log('⚠️  No Upstox token set — configure .env to fetch live data');
     return;
   }
 
@@ -92,15 +187,7 @@ async function connectUpstox() {
 
     upstoxWS.on('open', () => {
       console.log('✅ Connected to Upstox WebSocket');
-      const subMsg = {
-        guid: 'dashboard-sub',
-        method: 'sub',
-        data: {
-          mode: 'full',
-          instrumentKeys: Object.values(INSTRUMENTS)
-        }
-      };
-      upstoxWS.send(JSON.stringify(subMsg));
+      sendUpstoxSubscription();
     });
 
     upstoxWS.on('message', (raw) => {
@@ -135,76 +222,6 @@ function broadcast(msg) {
   });
 }
 
-// Demo mode: simulate live ticks
-const demoPrices = {
-  'NIFTY50':   22450,
-  'BANKNIFTY': 48200,
-  'RELIANCE':  2890,
-  'TCS':       3750,
-  'HDFC BANK': 1620,
-  'CRUDE OIL': 6820,
-};
-
-function startDemo() {
-  if (demoInterval) return;
-  demoInterval = setInterval(() => {
-    Object.keys(demoPrices).forEach(symbol => {
-      const change = (Math.random() - 0.49) * demoPrices[symbol] * 0.002;
-      demoPrices[symbol] = parseFloat((demoPrices[symbol] + change).toFixed(2));
-      broadcast({
-        type: 'tick',
-        data: {
-          symbol,
-          ltp: demoPrices[symbol],
-          open: demoPrices[symbol] * 0.998,
-          high: demoPrices[symbol] * 1.005,
-          low: demoPrices[symbol] * 0.995,
-          close: demoPrices[symbol],
-          volume: Math.floor(Math.random() * 100000),
-          timestamp: Date.now(),
-          mode: 'DEMO',
-        },
-      });
-    });
-  }, 1000);
-}
-
-function stopDemo() {
-  if (demoInterval) {
-    clearInterval(demoInterval);
-    demoInterval = null;
-  }
-}
-
-function generateDemoCandles(symbol) {
-  const basePrices = {
-    'NIFTY50': 22450, 'BANKNIFTY': 48200, 'RELIANCE': 2890,
-    'TCS': 3750, 'HDFC BANK': 1620, 'CRUDE OIL': 6820,
-  };
-  let price = basePrices[symbol] || 22000;
-  const candles = [];
-  const now = Date.now();
-  const fiveMonthsAgo = now - 150 * 86400000;
-  const startOfDay = new Date(fiveMonthsAgo);
-  startOfDay.setHours(9, 15, 0, 0);
-  const marketOpen = startOfDay.getTime();
-  const totalMinutes = 150 * 375;
-  for (let i = totalMinutes; i >= 0; i--) {
-    const change = (Math.random() - 0.49) * price * 0.0008;
-    const open = price;
-    const close = parseFloat((price + change).toFixed(2));
-    const high = parseFloat((Math.max(open, close) * (1 + Math.random() * 0.002)).toFixed(2));
-    const low = parseFloat((Math.min(open, close) * (1 - Math.random() * 0.002)).toFixed(2));
-    candles.push({
-      time: Math.floor((marketOpen + i * 60000) / 1000),
-      open, high, low, close,
-      volume: Math.floor(Math.random() * 500000),
-    });
-    price = close;
-  }
-  return candles;
-}
-
 // ─── REST Endpoints ──────────────────────────────────────────────────────────
 
 // Send alert to Make.com
@@ -236,34 +253,53 @@ app.post('/api/alert', async (req, res) => {
 // Get historical OHLC for chart init
 app.get('/api/history/:symbol', async (req, res) => {
   const { symbol } = req.params;
-  const instrumentKey = INSTRUMENTS[symbol.toUpperCase()];
 
-  const isLive = ACCESS_TOKEN && ACCESS_TOKEN !== 'YOUR_UPSTOX_ACCESS_TOKEN_HERE';
+  const instrumentKey = symbolToKey[symbol.toUpperCase()];
 
-  if (currentMode === 'demo' || !isLive) {
-    return res.json({ candles: generateDemoCandles(symbol), mode: 'DEMO' });
+  if (!instrumentKey) {
+    return res.json({ candles: [], error: 'Unknown symbol' });
   }
 
-  const allCandles = [];
+  if (!ACCESS_TOKEN || ACCESS_TOKEN === 'YOUR_UPSTOX_ACCESS_TOKEN_HERE') {
+    return res.json({ candles: [], error: 'No token' });
+  }
+
+  // Use a conservative date range for intraday (14 days to avoid V2/V3 400 errors)
   const endDate = new Date();
   const startDate = new Date();
-  startDate.setMonth(startDate.getMonth() - 5);
+  startDate.setDate(startDate.getDate() - 14);
 
+  const allCandles = [];
   let currentStart = new Date(startDate);
   while (currentStart < endDate) {
-    const currentEnd = new Date(Math.min(currentStart.getTime() + 30 * 86400000, endDate.getTime()));
+    const currentEnd = new Date(Math.min(currentStart.getTime() + 7 * 86400000, endDate.getTime()));
     const toStr = currentEnd.toISOString().split('T')[0];
     const fromStr = currentStart.toISOString().split('T')[0];
 
+    let success = false;
+
+    // Try V3 API first (preferred format)
     try {
-      const v2Url = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/1minute/${toStr}/${fromStr}`;
-      const v2Resp = await axios.get(v2Url, {
+      const v3Url = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(instrumentKey)}/minutes/1/${toStr}/${fromStr}`;
+      const v3Resp = await axios.get(v3Url, {
         headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
       });
-      const raw = v2Resp.data?.data?.candles || [];
+      const raw = v3Resp.data?.data?.candles || [];
       allCandles.push(...raw);
-    } catch (err) {
-      console.error(`V2 history error for ${fromStr} to ${toStr}:`, err.message);
+      success = true;
+    } catch (v3Err) {
+      // V3 failed, try V2 as fallback
+      try {
+        const v2Url = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/1minute/${toStr}/${fromStr}`;
+        const v2Resp = await axios.get(v2Url, {
+          headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
+        });
+        const raw = v2Resp.data?.data?.candles || [];
+        allCandles.push(...raw);
+        success = true;
+      } catch (v2Err) {
+        console.error(`History error for ${fromStr} to ${toStr}:`, v2Err.message);
+      }
     }
 
     currentStart = new Date(currentEnd);
@@ -286,24 +322,109 @@ app.get('/api/history/:symbol', async (req, res) => {
     return res.json({ candles, mode: 'LIVE' });
   }
 
-  res.json({ candles: generateDemoCandles(symbol), mode: 'DEMO' });
+  // No candles from API — return empty (no synthetic data)
+  res.json({ candles: [] });
 });
 
-// Mode toggle
-app.get('/api/mode', (req, res) => {
-  res.json({ mode: currentMode });
+// ─── Symbols Map Endpoint ───────────────────────────────────────────────────
+
+app.get('/api/instruments/symbols', (req, res) => {
+  res.json(symbolToKey);
 });
 
-app.post('/api/mode', (req, res) => {
-  const { mode } = req.body;
-  if (mode === 'demo') {
-    currentMode = 'demo';
-    startDemo();
-    res.json({ mode: 'demo' });
-  } else {
-    currentMode = 'live';
-    stopDemo();
-    res.json({ mode: 'live' });
+// ─── Instrument Search Endpoint ─────────────────────────────────────────────
+
+app.get('/api/instruments/search', (req, res) => {
+  const { q, exchange, type, expiry } = req.query;
+  let results = instrumentsList;
+
+  // Filter by exchange
+  if (exchange && exchange !== 'all') {
+    results = results.filter(r => r.exchange === exchange.toUpperCase());
+  }
+
+  // Filter by instrument type
+  if (type && type !== 'all') {
+    results = results.filter(r => r.instrument_type === type.toUpperCase());
+  }
+
+  // Filter by expiry date
+  if (expiry) {
+    results = results.filter(r => r.expiry === expiry);
+  }
+
+  // Search query across tradingsymbol and name (case-insensitive)
+  if (q && q.trim()) {
+    const query = q.trim().toLowerCase();
+    results = results.filter(r =>
+      (r.tradingsymbol || '').toLowerCase().includes(query) ||
+      (r.name || '').toLowerCase().includes(query)
+    );
+    // Sort by relevance: exact prefix match on tradingsymbol first, then substring
+    results.sort((a, b) => {
+      const aSym = (a.tradingsymbol || '').toLowerCase();
+      const bSym = (b.tradingsymbol || '').toLowerCase();
+      const aPrefix = aSym.startsWith(query);
+      const bPrefix = bSym.startsWith(query);
+      if (aPrefix && !bPrefix) return -1;
+      if (!aPrefix && bPrefix) return 1;
+      return 0;
+    });
+  }
+
+  // Return top 20 matches
+  const top = results.slice(0, 20).map(r => ({
+    instrument_key: r.instrument_key,
+    tradingsymbol: r.tradingsymbol,
+    name: r.name,
+    exchange: r.exchange,
+    instrument_type: r.instrument_type,
+    expiry: r.expiry,
+    strike: r.strike,
+    lot_size: r.lot_size,
+  }));
+
+  res.json({ results: top });
+});
+
+// ─── Place Order Endpoint ───────────────────────────────────────────────────
+
+app.post('/api/order', async (req, res) => {
+  if (!ACCESS_TOKEN || ACCESS_TOKEN === 'YOUR_UPSTOX_ACCESS_TOKEN_HERE') {
+    return res.json({ success: false, error: 'Upstox not configured' });
+  }
+
+  const { symbol, qty, orderType, price, triggerPrice, product, side } = req.body;
+
+  // Resolve instrument key — look up in symbolToKey or use raw key as fallback
+  const instrumentKey = symbolToKey[symbol] || symbol;
+
+  // Build the Upstox order request body
+  const body = {
+    instrument_key: instrumentKey,
+    quantity: Number(qty),
+    order_type: orderType || 'MARKET',
+    price: price ? String(price) : '0',
+    trigger_price: triggerPrice ? String(triggerPrice) : '0',
+    product: product || 'MIS',
+    transaction_type: side || 'BUY',
+    validity: 'DAY',
+  };
+
+  try {
+    const resp = await axios.post('https://api.upstox.com/v2/order/place', body, {
+      headers: {
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+    });
+    console.log(`📈 Order placed: ${side} ${qty} ${symbol} @ ${price || 'MKT'}`);
+    res.json({ success: true, orderResponse: resp.data });
+  } catch (err) {
+    const msg = err.response?.data?.message || err.response?.data || err.message;
+    console.error('Order placement error:', msg);
+    res.json({ success: false, error: typeof msg === 'string' ? msg : JSON.stringify(msg) });
   }
 });
 
@@ -315,9 +436,12 @@ app.get('*', (req, res) => {
 // ─── HTTP + WS Server ────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`\n🚀 Dashboard running at http://localhost:${PORT}`);
-  const isLive = ACCESS_TOKEN && ACCESS_TOKEN !== 'YOUR_UPSTOX_ACCESS_TOKEN_HERE';
-  console.log(`📊 Mode: ${isLive ? 'LIVE (Upstox)' : 'DEMO (Simulated)'}\n`);
-  if (isLive) connectUpstox();
+  if (ACCESS_TOKEN && ACCESS_TOKEN !== 'YOUR_UPSTOX_ACCESS_TOKEN_HERE') {
+    console.log('📊 Mode: LIVE (Upstox)');
+    connectUpstox();
+  } else {
+    console.log('⚠️  No Upstox token set — configure .env to fetch live data');
+  }
 });
 
 server.on('upgrade', (req, socket, head) => {
@@ -329,6 +453,25 @@ server.on('upgrade', (req, socket, head) => {
 wss.on('connection', (ws) => {
   browserClients.add(ws);
   console.log(`Browser connected (${browserClients.size} total)`);
+
+  // Handle messages from the browser (e.g. subscribe to new instruments)
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'subscribe' && msg.instrumentKey) {
+        const key = msg.instrumentKey;
+        if (!subscribedKeys.has(key)) {
+          subscribedKeys.add(key);
+          console.log(`➕ Subscribed to new key: ${key}`);
+          // Send updated subscription to Upstox
+          sendUpstoxSubscription();
+        }
+      }
+    } catch (e) {
+      // Ignore parse errors on WS messages
+    }
+  });
+
   ws.on('close', () => {
     browserClients.delete(ws);
     console.log(`Browser disconnected (${browserClients.size} total)`);
