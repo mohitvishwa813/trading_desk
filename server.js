@@ -176,18 +176,27 @@ function stopDemo() {
   }
 }
 
-function generateDemoCandles() {
+function generateDemoCandles(symbol) {
+  const basePrices = {
+    'NIFTY50': 22450, 'BANKNIFTY': 48200, 'RELIANCE': 2890,
+    'TCS': 3750, 'HDFC BANK': 1620, 'CRUDE OIL': 6820,
+  };
+  let price = basePrices[symbol] || 22000;
   const candles = [];
-  let price = 22000;
   const now = Date.now();
-  for (let i = 100; i >= 0; i--) {
+  const fiveMonthsAgo = now - 150 * 86400000;
+  const startOfDay = new Date(fiveMonthsAgo);
+  startOfDay.setHours(9, 15, 0, 0);
+  const marketOpen = startOfDay.getTime();
+  const totalMinutes = 150 * 375;
+  for (let i = totalMinutes; i >= 0; i--) {
+    const change = (Math.random() - 0.49) * price * 0.0008;
     const open = price;
-    const change = (Math.random() - 0.48) * price * 0.005;
     const close = parseFloat((price + change).toFixed(2));
-    const high = parseFloat((Math.max(open, close) * (1 + Math.random() * 0.003)).toFixed(2));
-    const low = parseFloat((Math.min(open, close) * (1 - Math.random() * 0.003)).toFixed(2));
+    const high = parseFloat((Math.max(open, close) * (1 + Math.random() * 0.002)).toFixed(2));
+    const low = parseFloat((Math.min(open, close) * (1 - Math.random() * 0.002)).toFixed(2));
     candles.push({
-      time: Math.floor((now - i * 60000) / 1000),
+      time: Math.floor((marketOpen + i * 60000) / 1000),
       open, high, low, close,
       volume: Math.floor(Math.random() * 500000),
     });
@@ -232,38 +241,52 @@ app.get('/api/history/:symbol', async (req, res) => {
   const isLive = ACCESS_TOKEN && ACCESS_TOKEN !== 'YOUR_UPSTOX_ACCESS_TOKEN_HERE';
 
   if (currentMode === 'demo' || !isLive) {
-    return res.json({ candles: generateDemoCandles(), mode: 'DEMO' });
+    return res.json({ candles: generateDemoCandles(symbol), mode: 'DEMO' });
   }
 
-  let raw = [];
-  try {
-    const v3Url = `https://api.upstox.com/v3/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/minutes/1`;
-    const v3Resp = await axios.get(v3Url, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
-    });
-    raw = v3Resp.data?.data?.candles || [];
-  } catch {}
-  if (!raw.length) {
+  const allCandles = [];
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setMonth(startDate.getMonth() - 5);
+
+  let currentStart = new Date(startDate);
+  while (currentStart < endDate) {
+    const currentEnd = new Date(Math.min(currentStart.getTime() + 30 * 86400000, endDate.getTime()));
+    const toStr = currentEnd.toISOString().split('T')[0];
+    const fromStr = currentStart.toISOString().split('T')[0];
+
     try {
-      const to = new Date().toISOString().split('T')[0];
-      const from = new Date(Date.now() - 5 * 86400000).toISOString().split('T')[0];
-      const v2Url = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/1minute/${to}/${from}`;
+      const v2Url = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/1minute/${toStr}/${fromStr}`;
       const v2Resp = await axios.get(v2Url, {
         headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
       });
-      raw = v2Resp.data?.data?.candles || [];
+      const raw = v2Resp.data?.data?.candles || [];
+      allCandles.push(...raw);
     } catch (err) {
-      console.error('V2 history error:', err.message);
+      console.error(`V2 history error for ${fromStr} to ${toStr}:`, err.message);
     }
+
+    currentStart = new Date(currentEnd);
   }
-  if (raw.length) {
-    const candles = raw.map(c => ({
-      time: Math.floor(new Date(c[0]).getTime() / 1000),
-      open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5]
-    })).reverse();
+
+  if (allCandles.length) {
+    const seen = new Set();
+    const candles = allCandles
+      .map(c => ({
+        time: Math.floor(new Date(c[0]).getTime() / 1000),
+        open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5]
+      }))
+      .filter(c => {
+        if (seen.has(c.time)) return false;
+        seen.add(c.time);
+        return true;
+      })
+      .sort((a, b) => a.time - b.time);
+
     return res.json({ candles, mode: 'LIVE' });
   }
-  res.json({ candles: [], mode: 'LIVE' });
+
+  res.json({ candles: generateDemoCandles(symbol), mode: 'DEMO' });
 });
 
 // Mode toggle

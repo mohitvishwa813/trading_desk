@@ -1,20 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import TopBar from './components/TopBar'
-import TickerStrip from './components/TickerStrip'
 import ChartPanel from './components/ChartPanel'
 import Sidebar from './components/Sidebar'
-
-const INSTRUMENTS = ['NIFTY50', 'BANKNIFTY', 'RELIANCE', 'TCS', 'HDFC BANK', 'CRUDE OIL']
+import SymbolSearch from './components/SymbolSearch'
 
 export default function App() {
   const [wsConnected, setWsConnected] = useState(false)
   const [mode, setMode] = useState('live')
   const [prices, setPrices] = useState({})
-  const [openPrices, setOpenPrices] = useState({})
   const [activeSymbol, setActiveSymbol] = useState('NIFTY50')
   const [tick, setTick] = useState(null)
   const [alerts, setAlerts] = useState([{ signal: 'INFO', symbol: '', message: 'Dashboard started — Waiting for market data...' }])
   const [webhookStatus, setWebhookStatus] = useState('Configure in .env file')
+  const [searchOpen, setSearchOpen] = useState(false)
 
   const wsRef = useRef(null)
 
@@ -28,7 +26,6 @@ export default function App() {
       setMode(newMode)
       if (newMode === 'live') {
         setPrices({})
-        setOpenPrices({})
         setTick(null)
       }
     } catch {}
@@ -49,10 +46,6 @@ export default function App() {
         if (msg.type === 'tick') {
           const data = msg.data
           setPrices(prev => ({ ...prev, [data.symbol]: data.ltp }))
-          setOpenPrices(prev => {
-            if (!(data.symbol in prev)) return { ...prev, [data.symbol]: data.ltp }
-            return prev
-          })
           setTick(data)
         }
       } catch {}
@@ -91,6 +84,20 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+      if (e.key === 'Escape' && searchOpen) {
+        setSearchOpen(false)
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [searchOpen])
+
   const selectSymbol = (symbol) => {
     setActiveSymbol(symbol)
   }
@@ -102,14 +109,7 @@ export default function App() {
         wsConnected={wsConnected}
         activeSymbol={activeSymbol}
         onToggleMode={toggleMode}
-      />
-
-      <TickerStrip
-        instruments={INSTRUMENTS}
-        prices={prices}
-        openPrices={openPrices}
-        activeSymbol={activeSymbol}
-        onSelect={selectSymbol}
+        onOpenSearch={() => setSearchOpen(true)}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -125,6 +125,15 @@ export default function App() {
           onSendAlert={sendAlert}
         />
       </div>
+
+      <SymbolSearch
+        isOpen={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelect={(symbol) => {
+          selectSymbol(symbol)
+          setSearchOpen(false)
+        }}
+      />
     </div>
   )
 }

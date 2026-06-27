@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "data-agent": {
+      "description": "Upstox data pipeline: WebSocket V3 protobuf, historical API, demo ticks, timeframe aggregation",
+      "mode": "subagent"
+    },
+    "frontend-agent": {
+      "description": "React 18 + Tailwind + lightweight-charts UI components and styling",
+      "mode": "subagent"
+    },
+    "backend-agent": {
+      "description": "Express server, WebSocket server, API routes, Make.com webhooks, deployment",
+      "mode": "subagent"
+    },
+    "testing-agent": {
+      "description": "E2E verification: API endpoints, WebSocket, demo mode, protobuf, frontend build",
+      "mode": "subagent"
+    }
+  }
+}
