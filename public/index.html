@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Trading Dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root {
+    --bg:       #0d0f14;
+    --surface:  #161a23;
+    --border:   #252a36;
+    --accent:   #4f9cf9;
+    --green:    #26a69a;
+    --red:      #ef5350;
+    --yellow:   #f4c542;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --font:     'JetBrains Mono', 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Top Bar ── */
+  #topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  #topbar .logo { font-size: 15px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
+  #mode-badge { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+  .mode-demo { background: #f4c54220; color: var(--yellow); border: 1px solid var(--yellow); }
+  .mode-live { background: #26a69a20; color: var(--green); border: 1px solid var(--green); }
+  #ws-status { width: 8px; height: 8px; border-radius: 50%; background: var(--red); margin-left: auto; }
+  #ws-status.connected { background: var(--green); }
+  #ws-label { font-size: 10px; color: var(--muted); }
+
+  /* ── Ticker Strip ── */
+  #ticker-strip {
+    display: flex; gap: 0; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto;
+  }
+  .ticker-item {
+    padding: 6px 18px; cursor: pointer; border-right: 1px solid var(--border);
+    transition: background 0.15s; white-space: nowrap; user-select: none;
+  }
+  .ticker-item:hover, .ticker-item.active { background: #4f9cf910; }
+  .ticker-item.active { border-bottom: 2px solid var(--accent); }
+  .t-symbol { font-size: 11px; font-weight: 700; color: var(--text); }
+  .t-price  { font-size: 13px; font-weight: 700; }
+  .t-change { font-size: 10px; }
+  .up   { color: var(--green); }
+  .down { color: var(--red); }
+
+  /* ── Main Layout ── */
+  #main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Chart Area ── */
+  #chart-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #chart-toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .tf-btn {
+    padding: 3px 10px; background: transparent; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: 11px;
+    transition: all 0.15s;
+  }
+  .tf-btn:hover, .tf-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #chart-type-toggle {
+    margin-left: auto; display: flex; gap: 4px;
+  }
+  .ct-btn {
+    padding: 3px 10px; background: transparent; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: 11px;
+    transition: all 0.15s;
+  }
+  .ct-btn.active { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+
+  #chart-container { flex: 1; position: relative; }
+  #chart { width: 100%; height: 100%; }
+
+  /* ── Right Sidebar ── */
+  #sidebar {
+    width: 300px; background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden;
+  }
+  .panel-title {
+    padding: 10px 14px; font-size: 10px; font-weight: 700; letter-spacing: 2px;
+    color: var(--muted); text-transform: uppercase; border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  /* Strategy Panel */
+  #strategy-panel { padding: 12px; border-bottom: 1px solid var(--border); }
+  .field-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .field-row { margin-bottom: 10px; }
+  select, input[type="number"], input[type="text"] {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); padding: 6px 8px; border-radius: 4px;
+    font-family: var(--font); font-size: 12px;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--accent); }
+  .btn-row { display: flex; gap: 6px; margin-top: 8px; }
+  .btn {
+    flex: 1; padding: 7px 0; border: none; border-radius: 4px;
+    cursor: pointer; font-family: var(--font); font-size: 12px; font-weight: 700;
+    transition: opacity 0.15s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn-green { background: var(--green); color: #fff; }
+  .btn-red   { background: var(--red);   color: #fff; }
+  .btn-blue  { background: var(--accent); color: #fff; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+
+  /* Alert Log */
+  #alert-log { flex: 1; overflow-y: auto; padding: 8px; }
+  .alert-item {
+    padding: 8px 10px; border-radius: 4px; margin-bottom: 6px;
+    border-left: 3px solid; font-size: 11px; line-height: 1.5;
+  }
+  .alert-buy  { border-color: var(--green); background: #26a69a10; }
+  .alert-sell { border-color: var(--red);   background: #ef535010; }
+  .alert-info { border-color: var(--accent); background: #4f9cf910; }
+  .alert-time { font-size: 9px; color: var(--muted); margin-top: 2px; }
+
+  /* Webhook Panel */
+  #webhook-panel { padding: 12px; border-top: 1px solid var(--border); }
+  #webhook-status { font-size: 10px; margin-top: 6px; color: var(--muted); }
+  #webhook-status.ok  { color: var(--green); }
+  #webhook-status.err { color: var(--red); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div id="topbar">
+  <div class="logo">⚡ TRADE DESK</div>
+  <span id="mode-badge" class="mode-demo">DEMO</span>
+  <div style="color:var(--muted); font-size:11px;" id="active-symbol-label">NIFTY50</div>
+  <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+    <div id="ws-status"></div>
+    <span id="ws-label">Disconnected</span>
+  </div>
+</div>
+
+<!-- Ticker Strip -->
+<div id="ticker-strip">
+  <div class="ticker-item active" data-symbol="NIFTY50" onclick="selectSymbol('NIFTY50', this)">
+    <div class="t-symbol">NIFTY50</div>
+    <div class="t-price up" id="price-NIFTY50">--</div>
+    <div class="t-change up" id="change-NIFTY50">--</div>
+  </div>
+  <div class="ticker-item" data-symbol="BANKNIFTY" onclick="selectSymbol('BANKNIFTY', this)">
+    <div class="t-symbol">BANKNIFTY</div>
+    <div class="t-price up" id="price-BANKNIFTY">--</div>
+    <div class="t-change up" id="change-BANKNIFTY">--</div>
+  </div>
+  <div class="ticker-item" data-symbol="RELIANCE" onclick="selectSymbol('RELIANCE', this)">
+    <div class="t-symbol">RELIANCE</div>
+    <div class="t-price up" id="price-RELIANCE">--</div>
+    <div class="t-change up" id="change-RELIANCE">--</div>
+  </div>
+  <div class="ticker-item" data-symbol="TCS" onclick="selectSymbol('TCS', this)">
+    <div class="t-symbol">TCS</div>
+    <div class="t-price up" id="price-TCS">--</div>
+    <div class="t-change up" id="change-TCS">--</div>
+  </div>
+  <div class="ticker-item" data-symbol="HDFC BANK" onclick="selectSymbol('HDFC BANK', this)">
+    <div class="t-symbol">HDFC BANK</div>
+    <div class="t-price up" id="price-HDFC BANK">--</div>
+    <div class="t-change up" id="change-HDFC BANK">--</div>
+  </div>
+  <div class="ticker-item" data-symbol="CRUDE OIL" onclick="selectSymbol('CRUDE OIL', this)">
+    <div class="t-symbol">CRUDE OIL</div>
+    <div class="t-price up" id="price-CRUDE OIL">--</div>
+    <div class="t-change up" id="change-CRUDE OIL">--</div>
+  </div>
+</div>
+
+<!-- Main -->
+<div id="main">
+
+  <!-- Chart Panel -->
+  <div id="chart-panel">
+    <div id="chart-toolbar">
+      <button class="tf-btn" onclick="setTF('1m', this)">1m</button>
+      <button class="tf-btn active" onclick="setTF('5m', this)">5m</button>
+      <button class="tf-btn" onclick="setTF('15m', this)">15m</button>
+      <button class="tf-btn" onclick="setTF('1h', this)">1h</button>
+      <button class="tf-btn" onclick="setTF('1d', this)">1D</button>
+      <div id="chart-type-toggle">
+        <button class="ct-btn active" onclick="setChartType('candle', this)">Candles</button>
+        <button class="ct-btn" onclick="setChartType('line', this)">Line</button>
+        <button class="ct-btn" onclick="setChartType('area', this)">Area</button>
+      </div>
+    </div>
+    <div id="chart-container">
+      <div id="chart"></div>
+    </div>
+  </div>
+
+  <!-- Right Sidebar -->
+  <div id="sidebar">
+    <div class="panel-title">Strategy & Alerts</div>
+
+    <div id="strategy-panel">
+      <div class="field-row">
+        <div class="field-label">STRATEGY</div>
+        <select id="strategy-select">
+          <option value="manual">Manual Signal</option>
+          <option value="ema_cross">EMA Crossover (9/21)</option>
+          <option value="rsi">RSI Overbought/Oversold</option>
+          <option value="breakout">Price Breakout</option>
+          <option value="custom">Custom Note</option>
+        </select>
+      </div>
+      <div class="field-row" id="price-level-row" style="display:none">
+        <div class="field-label">BREAKOUT PRICE LEVEL</div>
+        <input type="number" id="price-level" placeholder="e.g. 22500">
+      </div>
+      <div class="field-row" id="rsi-row" style="display:none">
+        <div class="field-label">RSI THRESHOLD</div>
+        <input type="number" id="rsi-val" placeholder="70 = overbought, 30 = oversold" value="70">
+      </div>
+      <div class="field-row" id="note-row" style="display:none">
+        <div class="field-label">CUSTOM MESSAGE</div>
+        <input type="text" id="custom-note" placeholder="Your alert message...">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-green" onclick="sendAlert('BUY')">▲ BUY</button>
+        <button class="btn btn-red"   onclick="sendAlert('SELL')">▼ SELL</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-outline" onclick="sendAlert('INFO')">📢 INFO Alert</button>
+      </div>
+    </div>
+
+    <div class="panel-title">Alert Log</div>
+    <div id="alert-log">
+      <div class="alert-item alert-info">
+        <strong>Dashboard started</strong><br>
+        Waiting for market data...
+        <div class="alert-time">--</div>
+      </div>
+    </div>
+
+    <div id="webhook-panel">
+      <div class="panel-title" style="padding:0 0 8px 0; border:none;">Make.com Webhook</div>
+      <div class="field-row">
+        <div class="field-label">WEBHOOK URL (set in .env)</div>
+        <input type="text" id="webhook-url-display" placeholder="Set MAKE_WEBHOOK_URL in .env" readonly>
+      </div>
+      <div id="webhook-status">Configure in .env file</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let chart, candleSeries, lineSeries, areaSeries;
+let activeSymbol = 'NIFTY50';
+let chartType = 'candle';
+let ws;
+let prices = {};
+let openPrices = {};
+let lastCandle = {};
+let tf = '5m'; // current timeframe
+let candleBuffer = {}; // symbol -> current building candle
+
+// ── Chart Setup ─────────────────────────────────────────────────────────────
+function initChart() {
+  const container = document.getElementById('chart');
+  chart = LightweightCharts.createChart(container, {
+    layout: { background: { color: '#0d0f14' }, textColor: '#e2e8f0' },
+    grid: { vertLines: { color: '#1e2330' }, horzLines: { color: '#1e2330' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: '#252a36' },
+    timeScale: { borderColor: '#252a36', timeVisible: true, secondsVisible: false },
+    width: container.offsetWidth,
+    height: container.offsetHeight,
+  });
+
+  candleSeries = chart.addCandlestickSeries({
+    upColor: '#26a69a', downColor: '#ef5350',
+    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+  });
+
+  lineSeries = chart.addLineSeries({ color: '#4f9cf9', lineWidth: 2, visible: false });
+  areaSeries = chart.addAreaSeries({
+    topColor: '#4f9cf940', bottomColor: '#4f9cf905',
+    lineColor: '#4f9cf9', lineWidth: 2, visible: false
+  });
+
+  window.addEventListener('resize', () => {
+    chart.applyOptions({ width: container.offsetWidth, height: container.offsetHeight });
+  });
+}
+
+function setChartType(type, btn) {
+  chartType = type;
+  document.querySelectorAll('.ct-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  candleSeries.applyOptions({ visible: type === 'candle' });
+  lineSeries.applyOptions({ visible: type === 'line' });
+  areaSeries.applyOptions({ visible: type === 'area' });
+}
+
+function setTF(newTf, btn) {
+  tf = newTf;
+  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadHistory(activeSymbol);
+}
+
+// ── Load Historical Candles ─────────────────────────────────────────────────
+async function loadHistory(symbol) {
+  try {
+    const res = await fetch(`/api/history/${encodeURIComponent(symbol)}`);
+    const { candles, mode } = await res.json();
+
+    const modeBadge = document.getElementById('mode-badge');
+    if (mode === 'LIVE') {
+      modeBadge.textContent = 'LIVE';
+      modeBadge.className = 'mode-live';
+    }
+
+    if (candles && candles.length) {
+      candleSeries.setData(candles);
+      lineSeries.setData(candles.map(c => ({ time: c.time, value: c.close })));
+      areaSeries.setData(candles.map(c => ({ time: c.time, value: c.close })));
+      chart.timeScale().fitContent();
+      lastCandle[symbol] = candles[candles.length - 1];
+    }
+  } catch (e) {
+    console.error('History error:', e);
+  }
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+
+  ws.onopen = () => {
+    document.getElementById('ws-status').classList.add('connected');
+    document.getElementById('ws-label').textContent = 'Connected';
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'tick') handleTick(msg.data);
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    document.getElementById('ws-status').classList.remove('connected');
+    document.getElementById('ws-label').textContent = 'Reconnecting...';
+    setTimeout(connectWS, 3000);
+  };
+}
+
+// ── Tick Handler ─────────────────────────────────────────────────────────────
+const TF_SECONDS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '1d': 86400 };
+
+function handleTick(data) {
+  const { symbol, ltp, open, high, low, close, timestamp } = data;
+  if (!symbol || !ltp) return;
+
+  // Update ticker
+  const prev = prices[symbol] || ltp;
+  prices[symbol] = ltp;
+  if (!openPrices[symbol]) openPrices[symbol] = ltp;
+
+  const change = ltp - openPrices[symbol];
+  const changePct = ((change / openPrices[symbol]) * 100).toFixed(2);
+  const dir = change >= 0 ? 'up' : 'down';
+
+  const priceEl  = document.getElementById(`price-${symbol}`);
+  const changeEl = document.getElementById(`change-${symbol}`);
+  if (priceEl) {
+    priceEl.textContent = ltp.toFixed(2);
+    priceEl.className = `t-price ${dir}`;
+  }
+  if (changeEl) {
+    changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)} (${changePct}%)`;
+    changeEl.className = `t-change ${dir}`;
+  }
+
+  // Update chart if active symbol
+  if (symbol !== activeSymbol) return;
+
+  const tfSec = TF_SECONDS[tf] || 300;
+  const nowSec = Math.floor((timestamp || Date.now()) / 1000);
+  const candleTime = Math.floor(nowSec / tfSec) * tfSec;
+
+  if (!candleBuffer[symbol] || candleBuffer[symbol].time !== candleTime) {
+    candleBuffer[symbol] = {
+      time: candleTime,
+      open: ltp, high: ltp, low: ltp, close: ltp
+    };
+  } else {
+    const c = candleBuffer[symbol];
+    c.high  = Math.max(c.high, ltp);
+    c.low   = Math.min(c.low, ltp);
+    c.close = ltp;
+  }
+
+  const candle = candleBuffer[symbol];
+  candleSeries.update(candle);
+  lineSeries.update({ time: candle.time, value: candle.close });
+  areaSeries.update({ time: candle.time, value: candle.close });
+}
+
+// ── Symbol Select ─────────────────────────────────────────────────────────────
+function selectSymbol(symbol, el) {
+  activeSymbol = symbol;
+  document.querySelectorAll('.ticker-item').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('active-symbol-label').textContent = symbol;
+  loadHistory(symbol);
+}
+
+// ── Strategy UI ───────────────────────────────────────────────────────────────
+document.getElementById('strategy-select').addEventListener('change', function() {
+  document.getElementById('price-level-row').style.display = this.value === 'breakout' ? 'block' : 'none';
+  document.getElementById('rsi-row').style.display         = this.value === 'rsi'      ? 'block' : 'none';
+  document.getElementById('note-row').style.display        = this.value === 'custom'   ? 'block' : 'none';
+});
+
+// ── Send Alert ────────────────────────────────────────────────────────────────
+async function sendAlert(signal) {
+  const strategy = document.getElementById('strategy-select').value;
+  const price = prices[activeSymbol] || 0;
+  const note = document.getElementById('custom-note').value;
+  const rsi = document.getElementById('rsi-val').value;
+  const level = document.getElementById('price-level').value;
+
+  let message = `${signal} signal on ${activeSymbol}`;
+  if (strategy === 'ema_cross') message = `EMA 9/21 Crossover — ${signal} on ${activeSymbol} @ ${price}`;
+  if (strategy === 'rsi')       message = `RSI ${signal === 'BUY' ? 'Oversold' : 'Overbought'} (${rsi}) on ${activeSymbol} @ ${price}`;
+  if (strategy === 'breakout')  message = `Price ${signal === 'BUY' ? 'above' : 'below'} level ${level} — ${activeSymbol} @ ${price}`;
+  if (strategy === 'custom')    message = note || message;
+
+  // Add to local log
+  addAlertLog(signal, activeSymbol, price, message);
+
+  // Send to Make.com via server
+  try {
+    const res = await fetch('/api/alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: activeSymbol, strategy, price, signal, message })
+    });
+    const result = await res.json();
+    const statusEl = document.getElementById('webhook-status');
+    if (result.success) {
+      statusEl.textContent = `✅ Sent to Make.com at ${new Date().toLocaleTimeString()}`;
+      statusEl.className = 'ok';
+    } else {
+      statusEl.textContent = `⚠️ ${result.error}`;
+      statusEl.className = 'err';
+    }
+  } catch (err) {
+    document.getElementById('webhook-status').textContent = `❌ ${err.message}`;
+    document.getElementById('webhook-status').className = 'err';
+  }
+}
+
+function addAlertLog(signal, symbol, price, message) {
+  const log = document.getElementById('alert-log');
+  const cls = signal === 'BUY' ? 'alert-buy' : signal === 'SELL' ? 'alert-sell' : 'alert-info';
+  const icon = signal === 'BUY' ? '▲' : signal === 'SELL' ? '▼' : '📢';
+  const div = document.createElement('div');
+  div.className = `alert-item ${cls}`;
+  div.innerHTML = `
+    <strong>${icon} ${signal} — ${symbol}</strong><br>
+    ${message}<br>
+    <span style="color:#4f9cf9">₹${parseFloat(price).toFixed(2)}</span>
+    <div class="alert-time">${new Date().toLocaleTimeString()}</div>
+  `;
+  log.insertBefore(div, log.firstChild);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+initChart();
+loadHistory(activeSymbol);
+connectWS();
+</script>
+</body>
+</html>
