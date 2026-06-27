@@ -204,8 +204,63 @@ function getIndicatorColor(index) {
   return colors[index % colors.length]
 }
 
+// --- Drawing hit testing --------------------
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const lenSq = dx * dx + dy * dy
+  if (lenSq === 0) return Math.hypot(px - x1, py - y1)
+  let t = ((px - x1) * dx + (py - y1) * dy) / lenSq
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+}
+
+function hitTestDrawing(mx, my, drawing, chart, series, cw, ch) {
+  const pts = drawing.points.map(p => ({
+    x: chart.timeScale().timeToCoordinate(p.time),
+    y: series.priceToCoordinate(p.price),
+  }))
+  if (pts.some(p => p.x === null || p.y === null)) return false
+  const r = 7
+  switch (drawing.tool) {
+    case 'trend_line':
+      return distanceToSegment(mx, my, pts[0].x, pts[0].y, pts[1].x, pts[1].y) < r
+    case 'horizontal_line':
+      return Math.abs(my - pts[0].y) < r
+    case 'horizontal_ray':
+      return Math.abs(my - pts[0].y) < r && mx >= pts[0].x - r
+    case 'vertical_line':
+      return Math.abs(mx - pts[0].x) < r
+    case 'rectangle': {
+      const x = Math.min(pts[0].x, pts[1].x)
+      const y = Math.min(pts[0].y, pts[1].y)
+      const w = Math.abs(pts[1].x - pts[0].x)
+      const h = Math.abs(pts[1].y - pts[0].y)
+      return mx >= x - r && mx <= x + w + r && my >= y - r && my <= y + h + r
+    }
+    case 'fibonacci': {
+      const topY = pts[0].y
+      const bottomY = pts[1]?.y ?? (topY + 100)
+      return mx >= 0 && mx <= cw && my >= Math.min(topY, bottomY) - r && my <= Math.max(topY, bottomY) + r
+    }
+    case 'text_label':
+      return Math.hypot(mx - pts[0].x, my - pts[0].y) < r * 2
+    default:
+      return false
+  }
+}
+
+function hitTestDrawings(mx, my, drawings, chart, series, cw, ch) {
+  for (let i = drawings.length - 1; i >= 0; i--) {
+    if (hitTestDrawing(mx, my, drawings[i], chart, series, cw, ch)) {
+      return drawings[i].id
+    }
+  }
+  return null
+}
+
 // --- Drawing SVG renderer ------------------
-function renderDrawingElement(drawing, chart, series, cw, ch) {
+function renderDrawingElement(drawing, chart, series, cw, ch, selectedId, hoveredId) {
   if (!chart || !series) return null
   const points = drawing.points.map(p => {
     const x = chart.timeScale().timeToCoordinate(p.time)
@@ -214,27 +269,57 @@ function renderDrawingElement(drawing, chart, series, cw, ch) {
   })
   if (points.some(p => p.x === null || p.y === null)) return null
 
-  const color = drawing.color || '#4f9cf9'
-  const sw = 1.5
+  const isSelected = drawing.id === selectedId
+  const isHovered = drawing.id === hoveredId
+  const color = isSelected ? '#ffffff' : drawing.color || '#4f9cf9'
+  const sw = isSelected ? 2.5 : isHovered ? 2 : 1.5
+  const attrs = { 'data-drawing-id': drawing.id, style: { cursor: 'pointer' } }
+  const hitAttrs = { ...attrs, pointerEvents: 'stroke' }
+
+  const selCircle = (x, y) =>
+    isSelected ? <circle cx={x} cy={y} r={5} fill="none" stroke="#fff" strokeWidth={1} opacity={0.6} /> : null
 
   switch (drawing.tool) {
     case 'trend_line': {
       if (points.length < 2) return null
-      return <line key={drawing.id} x1={points[0].x} y1={points[0].y} x2={points[1].x} y2={points[1].y} stroke={color} strokeWidth={sw} />
+      return (
+        <g key={drawing.id}>
+          <line {...hitAttrs} x1={points[0].x} y1={points[0].y} x2={points[1].x} y2={points[1].y} stroke={color} strokeWidth={sw} />
+          {selCircle(points[0].x, points[0].y)}
+          {selCircle(points[1].x, points[1].y)}
+        </g>
+      )
     }
     case 'horizontal_line': {
       if (!points[0]) return null
-      return <line key={drawing.id} x1={0} y1={points[0].y} x2={cw} y2={points[0].y} stroke={color} strokeWidth={sw} />
+      return (
+        <g key={drawing.id}>
+          <line {...hitAttrs} x1={0} y1={points[0].y} x2={cw} y2={points[0].y} stroke={color} strokeWidth={sw} />
+          {selCircle(0, points[0].y)}
+          {selCircle(cw, points[0].y)}
+        </g>
+      )
     }
     case 'horizontal_ray': {
       if (!points[0]) return null
       const dir = drawing.direction || 1
       const x2 = dir > 0 ? cw : 0
-      return <line key={drawing.id} x1={points[0].x} y1={points[0].y} x2={x2} y2={points[0].y} stroke={color} strokeWidth={sw} />
+      return (
+        <g key={drawing.id}>
+          <line {...hitAttrs} x1={points[0].x} y1={points[0].y} x2={x2} y2={points[0].y} stroke={color} strokeWidth={sw} />
+          {selCircle(points[0].x, points[0].y)}
+        </g>
+      )
     }
     case 'vertical_line': {
       if (!points[0]) return null
-      return <line key={drawing.id} x1={points[0].x} y1={0} x2={points[0].x} y2={ch} stroke={color} strokeWidth={sw} />
+      return (
+        <g key={drawing.id}>
+          <line {...hitAttrs} x1={points[0].x} y1={0} x2={points[0].x} y2={ch} stroke={color} strokeWidth={sw} />
+          {selCircle(points[0].x, 0)}
+          {selCircle(points[0].x, ch)}
+        </g>
+      )
     }
     case 'rectangle': {
       if (points.length < 2) return null
@@ -242,7 +327,13 @@ function renderDrawingElement(drawing, chart, series, cw, ch) {
       const y = Math.min(points[0].y, points[1].y)
       const w = Math.abs(points[1].x - points[0].x)
       const h = Math.abs(points[1].y - points[0].y)
-      return <rect key={drawing.id} x={x} y={y} width={w} height={h} stroke={color} strokeWidth={sw} fill="none" />
+      return (
+        <g key={drawing.id}>
+          <rect {...hitAttrs} x={x} y={y} width={w} height={h} stroke={color} strokeWidth={sw} fill="none" />
+          {selCircle(x, y)}
+          {selCircle(x + w, y + h)}
+        </g>
+      )
     }
     case 'fibonacci': {
       if (!points[0]) return null
@@ -250,18 +341,28 @@ function renderDrawingElement(drawing, chart, series, cw, ch) {
       const topY = points[0].y
       const bottomY = points[1]?.y ?? (topY + 100)
       const range = bottomY - topY
+      const fibColor = isSelected ? '#ffffff' : color
       return (
-        <g key={drawing.id}>
+        <g key={drawing.id} {...attrs}>
           {levels.map((level, i) => (
             <line key={i} x1={0} y1={topY + range * level} x2={cw} y2={topY + range * level}
-              stroke={color} strokeWidth={0.5} opacity={0.5} strokeDasharray="4 2" />
+              stroke={fibColor} strokeWidth={sw * 0.4} opacity={0.6} strokeDasharray="4 2"
+              pointerEvents="stroke" data-drawing-id={drawing.id} />
           ))}
+          {selCircle(0, topY)}
+          {selCircle(0, bottomY)}
         </g>
       )
     }
     case 'text_label': {
       if (!points[0]) return null
-      return <text key={drawing.id} x={points[0].x} y={points[0].y} fill={color} fontSize="12" fontFamily="monospace" dominantBaseline="hanging">{drawing.text || ''}</text>
+      return (
+        <g key={drawing.id} {...attrs}>
+          <text x={points[0].x} y={points[0].y} fill={color} fontSize="13" fontFamily="monospace" dominantBaseline="hanging"
+            pointerEvents="visible" data-drawing-id={drawing.id}>{drawing.text || ''}</text>
+          {selCircle(points[0].x, points[0].y)}
+        </g>
+      )
     }
     default:
       return null
@@ -300,6 +401,10 @@ export default function ChartPanel({
     return saved ? Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, parseInt(saved, 10))) : 40
   })
   const [dataVersion, setDataVersion] = useState(0)
+  const [drawingState, setDrawingState] = useState({ mode: 'idle', pendingPoint: null, selectedId: null, hoveredId: null })
+  const drawingStateRef = useRef(drawingState)
+  drawingStateRef.current = drawingState
+  const [previewBump, setPreviewBump] = useState(0)
 
   // --- Refs -----------------------------------
   const containerRef = useRef(null)
@@ -321,6 +426,15 @@ export default function ChartPanel({
   const loadedDataRef = useRef([])
   const baseCandlesRef = useRef([])
   const priceScaleMarginsRef = useRef({ top: 0.05, bottom: 0.05 })
+  const svgRef = useRef(null)
+  const mousePosRef = useRef(null)
+  const dragStartRef = useRef(null) // { drawingId, startPoints, mouseX, mouseY }
+  const activeDrawingToolRef = useRef(activeDrawingTool)
+  activeDrawingToolRef.current = activeDrawingTool
+  const drawingsRef = useRef(drawings)
+  drawingsRef.current = drawings
+  const onDrawingsChangeRef = useRef(onDrawingsChange)
+  onDrawingsChangeRef.current = onDrawingsChange
 
   // --- Persist style --------------------------
   useEffect(() => { localStorage.setItem('chartStyle', chartStyle) }, [chartStyle])
@@ -532,6 +646,214 @@ export default function ChartPanel({
     }
   }, [])
 
+  // --- Drawing interaction handlers ---------
+  useEffect(() => {
+    const container = containerRef.current
+    const chart = chartRef.current
+    if (!container || !chart) return
+
+    const ONE_CLICK_TOOLS = ['horizontal_line', 'horizontal_ray', 'vertical_line', 'text_label']
+    const TWO_CLICK_TOOLS = ['trend_line', 'rectangle', 'fibonacci']
+    const DRAWING_TOOLS = [...ONE_CLICK_TOOLS, ...TWO_CLICK_TOOLS]
+
+    const getCoords = (clientX, clientY) => {
+      const rect = container.getBoundingClientRect()
+      const x = clientX - rect.left
+      const y = clientY - rect.top
+      const time = chart.timeScale().coordinateToTime(x)
+      const series = activeSeriesRef.current
+      const price = series?.coordinateToPrice(y)
+      if (time == null || price == null) return null
+      return { time: Math.floor(time), price, x, y }
+    }
+
+    const curDrawings = () => drawingsRef.current
+    const curTool = () => activeDrawingToolRef.current
+    const curOnChange = () => onDrawingsChangeRef.current
+
+    const createNewDrawing = (pointA, pointB) => {
+      const tool = curTool()
+      if (tool === 'cursor') return
+      let text = ''
+      if (tool === 'text_label') {
+        text = window.prompt('Enter label text:', 'Label') || 'Label'
+      }
+      const newDrawing = {
+        id: Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        tool,
+        points: pointB ? [pointA, pointB] : [pointA],
+        color: '#4f9cf9',
+        direction: 1,
+        text,
+      }
+      curOnChange()([...curDrawings(), newDrawing])
+    }
+
+    const onMouseDown = (e) => {
+      const tool = curTool()
+      const coords = getCoords(e.clientX, e.clientY)
+      if (!coords) return
+
+      const state = drawingStateRef.current
+      const cw = container.offsetWidth
+      const ch = container.offsetHeight
+      const series = activeSeriesRef.current
+      const currentDrawings = curDrawings()
+
+      // Check if clicking on an existing drawing
+      const hitId = hitTestDrawings(coords.x, coords.y, currentDrawings, chart, series, cw, ch)
+
+      // Cursor tool: select / drag drawings, or let chart handle normally
+      if (tool === 'cursor') {
+        if (hitId) {
+          e.preventDefault()
+          e.stopPropagation()
+          setDrawingState(prev => ({ ...prev, selectedId: hitId, mode: 'idle', pendingPoint: null }))
+
+          // Start drag on the drawing
+          const drawing = currentDrawings.find(d => d.id === hitId)
+          if (drawing) {
+            dragStartRef.current = {
+              drawingId: hitId,
+              startPoints: JSON.parse(JSON.stringify(drawing.points)),
+              mouseX: coords.x,
+              mouseY: coords.y,
+            }
+            setDrawingState(prev => ({ ...prev, mode: 'dragging' }))
+          }
+          return
+        } else {
+          // Clicking empty space with cursor -> deselect
+          setDrawingState(prev => ({ ...prev, selectedId: null }))
+          // Let the chart handle pan/zoom
+          return
+        }
+      }
+
+      e.preventDefault()
+      e.stopPropagation()
+
+      // Eraser mode: delete the clicked drawing
+      if (tool === 'eraser') {
+        if (hitId) {
+          curOnChange()(currentDrawings.filter(d => d.id !== hitId))
+        }
+        return
+      }
+
+      // If clicking on a drawing and we have a drawing tool active, select it
+      if (hitId && DRAWING_TOOLS.includes(tool)) {
+        setDrawingState(prev => ({ ...prev, selectedId: hitId, mode: 'idle', pendingPoint: null }))
+        return
+      }
+
+      // Start drag on selected drawing
+      if (hitId === state.selectedId) {
+        const drawing = currentDrawings.find(d => d.id === hitId)
+        if (drawing) {
+          dragStartRef.current = {
+            drawingId: hitId,
+            startPoints: JSON.parse(JSON.stringify(drawing.points)),
+            mouseX: coords.x,
+            mouseY: coords.y,
+          }
+          setDrawingState(prev => ({ ...prev, mode: 'dragging' }))
+          return
+        }
+      }
+
+      // Placing new drawing
+      if (TWO_CLICK_TOOLS.includes(tool)) {
+        if (!state.pendingPoint) {
+          setDrawingState(prev => ({ ...prev, mode: 'placing', pendingPoint: coords }))
+        } else {
+          createNewDrawing(state.pendingPoint, coords)
+          setDrawingState(prev => ({ ...prev, mode: 'idle', pendingPoint: null, selectedId: null }))
+        }
+      } else if (ONE_CLICK_TOOLS.includes(tool)) {
+        createNewDrawing(coords)
+        setDrawingState(prev => ({ ...prev, mode: 'idle', pendingPoint: null, selectedId: null }))
+      }
+    }
+
+    const onMouseMove = (e) => {
+      const tool = curTool()
+      const rect = container.getBoundingClientRect()
+      const mx = e.clientX - rect.left
+      const my = e.clientY - rect.top
+      mousePosRef.current = { x: mx, y: my }
+      const currentDrawings = curDrawings()
+
+      // Update hovered drawing for cursor feedback
+      const series = activeSeriesRef.current
+      if (series && (tool === 'cursor' || DRAWING_TOOLS.includes(tool) || tool === 'eraser')) {
+        const cw = container.offsetWidth
+        const ch = container.offsetHeight
+        const hitId = hitTestDrawings(mx, my, currentDrawings, chart, series, cw, ch)
+        if (hitId !== drawingStateRef.current.hoveredId) {
+          setDrawingState(prev => ({ ...prev, hoveredId: hitId }))
+        }
+      }
+
+      // Drag handling
+      const drag = dragStartRef.current
+      if (drag) {
+        const dx = mx - drag.mouseX
+        const dy = my - drag.mouseY
+        const chartPts = drag.startPoints.map(p => ({
+          x: chart.timeScale().timeToCoordinate(p.time),
+          y: series?.priceToCoordinate(p.price),
+        }))
+        const newPoints = drag.startPoints.map((p, i) => {
+          const oldPx = chartPts[i]?.x ?? 0
+          const oldPy = chartPts[i]?.y ?? 0
+          const newX = oldPx + dx
+          const newY = oldPy + dy
+          const newTime = chart.timeScale().coordinateToTime(newX)
+          const newPrice = series?.coordinateToPrice(newY)
+          return {
+            time: newTime != null ? Math.floor(newTime) : p.time,
+            price: newPrice != null ? newPrice : p.price,
+          }
+        })
+        const updated = currentDrawings.map(d =>
+          d.id === drag.drawingId ? { ...d, points: newPoints } : d
+        )
+        curOnChange()(updated)
+      }
+
+      // Re-render for preview line (mousemove -> update mousePos)
+      if (tool !== 'cursor' && drawingStateRef.current.mode === 'placing') {
+        setPreviewBump(n => n + 1)
+      }
+    }
+
+    const onMouseUp = () => {
+      if (dragStartRef.current) {
+        dragStartRef.current = null
+        setDrawingState(prev => ({ ...prev, mode: 'idle' }))
+      }
+    }
+
+    const onWheel = (e) => {
+      if (curTool() !== 'cursor') {
+        e.preventDefault()
+      }
+    }
+
+    container.addEventListener('mousedown', onMouseDown)
+    container.addEventListener('mousemove', onMouseMove)
+    container.addEventListener('mouseup', onMouseUp)
+    container.addEventListener('wheel', onWheel, { passive: false })
+
+    return () => {
+      container.removeEventListener('mousedown', onMouseDown)
+      container.removeEventListener('mousemove', onMouseMove)
+      container.removeEventListener('mouseup', onMouseUp)
+      container.removeEventListener('wheel', onWheel)
+    }
+  }, [])
+
   // --- Fetch history ------------------------
   useEffect(() => {
     const id = ++fetchIdRef.current
@@ -739,6 +1061,31 @@ export default function ChartPanel({
     })
   }, [indicators, dataVersion])
 
+  // --- Keyboard handlers for drawings --------
+  useEffect(() => {
+    const handler = (e) => {
+      const state = drawingStateRef.current
+      const tool = activeDrawingToolRef.current
+      const curDrawings = drawingsRef.current
+      if (e.key === 'Escape') {
+        if (state.mode === 'placing' && state.pendingPoint) {
+          setDrawingState({ mode: 'idle', pendingPoint: null, selectedId: null, hoveredId: null })
+        } else if (state.selectedId) {
+          setDrawingState(prev => ({ ...prev, selectedId: null }))
+        } else if (tool !== 'cursor') {
+          onDrawingToolChange('cursor')
+        }
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedId && !e.target.closest('input,textarea,select')) {
+        e.preventDefault()
+        onDrawingsChange(curDrawings.filter(d => d.id !== state.selectedId))
+        setDrawingState(prev => ({ ...prev, selectedId: null }))
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onDrawingToolChange, onDrawingsChange])
+
   // --- Persist bottom panel height -----------
   useEffect(() => {
     localStorage.setItem('chartTimeScaleHeight', bottomPanelHeight.toString())
@@ -811,14 +1158,36 @@ export default function ChartPanel({
 
   // --- Render drawing SVG elements -----------
   const drawingSvgElements = useMemo(() => {
-    if (!drawings.length || !chartRef.current) return null
+    if (!chartRef.current) return null
     const chart = chartRef.current
     const series = activeSeriesRef.current
     const container = mainChartContainerRef.current
     const cw = container?.offsetWidth || 800
     const ch = container?.offsetHeight || 400
-    return drawings.map(d => renderDrawingElement(d, chart, series, cw, ch))
-  }, [drawings, visibleRange, chartStyle])
+    const selId = drawingState.selectedId
+    const hovId = drawingState.hoveredId
+    return drawings.map(d => renderDrawingElement(d, chart, series, cw, ch, selId, hovId))
+  }, [drawings, visibleRange, chartStyle, drawingState.selectedId, drawingState.hoveredId])
+
+  // --- Preview line for two-click drawings ---
+  const previewElements = useMemo(() => {
+    if (!chartRef.current || drawingState.mode !== 'placing' || !drawingState.pendingPoint || !mousePosRef.current) return null
+    const chart = chartRef.current
+    const series = activeSeriesRef.current
+    if (!series) return null
+    const pp = drawingState.pendingPoint
+    const p1x = chart.timeScale().timeToCoordinate(pp.time)
+    const p1y = series.priceToCoordinate(pp.price)
+    const p2x = mousePosRef.current.x
+    const p2y = mousePosRef.current.y
+    if (p1x == null || p1y == null) return null
+    return (
+      <line
+        x1={p1x} y1={p1y} x2={p2x} y2={p2y}
+        stroke="#4f9cf9" strokeWidth={1} strokeDasharray="4 3" opacity={0.6}
+      />
+    )
+  }, [drawingState.mode, drawingState.pendingPoint, visibleRange, previewBump])
 
   // --- JSX -----------------------------------
   return (
@@ -893,7 +1262,10 @@ export default function ChartPanel({
       )}
 
       {/* -- Chart area ------------------------ */}
-      <div ref={containerRef} className="flex-1 relative min-h-0">
+      <div
+        ref={containerRef}
+        className={`flex-1 relative min-h-0 ${drawingState.hoveredId ? 'cursor-pointer' : ''}`}
+      >
         {!activeSymbol && (
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#0d0f14]">
             <div className="text-center">
@@ -910,7 +1282,6 @@ export default function ChartPanel({
           onToolSelect={onDrawingToolChange}
           drawings={drawings}
           onClearDrawings={() => onDrawingsChange([])}
-          onRemoveLastDrawing={() => onDrawingsChange(drawings.slice(0, -1))}
         />
 
         {loading && (
@@ -925,14 +1296,36 @@ export default function ChartPanel({
           </div>
         )}
 
+        {/* Drawing mode hint */}
+        {activeDrawingTool !== 'cursor' && (
+          <div className="absolute top-1 left-12 z-20 pointer-events-none">
+            <span className="text-[10px] px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
+              {drawingState.mode === 'placing'
+                ? `Place second point (Esc to cancel)`
+                : `Draw: ${activeDrawingTool.replace(/_/g, ' ')} (Esc to exit)`}
+            </span>
+          </div>
+        )}
+
         <svg
-          className="absolute left-10 top-0 right-0 bottom-0 z-10 pointer-events-none"
+          ref={svgRef}
+          className={`absolute left-10 top-0 right-0 bottom-0 z-10 transition-none ${
+            activeDrawingTool !== 'cursor' ? 'pointer-events-auto' : 'pointer-events-none'
+          } ${activeDrawingTool !== 'cursor' ? 'cursor-crosshair' : ''}`}
           style={{ width: 'calc(100% - 40px)', height: '100%' }}
         >
           {drawingSvgElements}
+          {previewElements}
         </svg>
 
-        <div ref={mainChartContainerRef} className="absolute left-10 top-0 right-0 bottom-0" />
+        <div
+          ref={mainChartContainerRef}
+          className={`absolute left-10 top-0 right-0 bottom-0 ${
+            activeDrawingTool !== 'cursor' ? 'pointer-events-none' : ''
+          } ${activeDrawingTool === 'eraser' ? 'cursor-crosshair' : ''} ${
+            activeDrawingTool === 'trend_line' || activeDrawingTool === 'horizontal_line' || activeDrawingTool === 'horizontal_ray' || activeDrawingTool === 'vertical_line' || activeDrawingTool === 'rectangle' || activeDrawingTool === 'fibonacci' || activeDrawingTool === 'text_label' ? 'cursor-crosshair' : ''
+          }`}
+        />
       </div>
 
       {/* -- Bottom drag handle ----------------- */}

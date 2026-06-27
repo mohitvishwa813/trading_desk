@@ -89,7 +89,6 @@ export default function DrawingTools({
   onToolSelect,
   drawings,
   onClearDrawings,
-  onRemoveLastDrawing,
 }) {
   const [hoveredTool, setHoveredTool] = useState(null)
   const hasDrawings = Array.isArray(drawings) && drawings.length > 0
@@ -97,7 +96,6 @@ export default function DrawingTools({
   const handleClick = (tool) => {
     if (tool.id === 'eraser') {
       if (hasDrawings) {
-        onRemoveLastDrawing?.()
         onToolSelect?.('eraser')
       }
       return
@@ -105,7 +103,6 @@ export default function DrawingTools({
     if (tool.id === 'clear_all') {
       if (hasDrawings) {
         onClearDrawings?.()
-        onToolSelect?.('clear_all')
       }
       return
     }
