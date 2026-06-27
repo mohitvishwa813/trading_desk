@@ -267,12 +267,12 @@ app.get('/api/history/:symbol', async (req, res) => {
   // Use a conservative date range for intraday (14 days to avoid V2/V3 400 errors)
   const endDate = new Date();
   const startDate = new Date();
-  startDate.setDate(startDate.getDate() - 14);
+  startDate.setFullYear(startDate.getFullYear() - 1);
 
   const allCandles = [];
   let currentStart = new Date(startDate);
   while (currentStart < endDate) {
-    const currentEnd = new Date(Math.min(currentStart.getTime() + 7 * 86400000, endDate.getTime()));
+    const currentEnd = new Date(Math.min(currentStart.getTime() + 30 * 86400000, endDate.getTime()));
     const toStr = currentEnd.toISOString().split('T')[0];
     const fromStr = currentStart.toISOString().split('T')[0];
 
