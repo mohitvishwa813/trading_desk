@@ -1,27 +1,24 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 
-const CATEGORIES = ['All', 'Stocks', 'Futures', 'Options', 'Commodities']
+const CATEGORIES = ['All', 'Stocks', 'Futures', 'Options']
 
 function getCategoryFilter(category) {
   switch (category) {
     case 'Stocks': return 'type=EQ'
     case 'Futures': return 'type=FUT'
     case 'Options': return 'type=OPT'
-    case 'Commodities': return 'exchange=MCX'
     default: return ''
   }
 }
 
 function getGroupKey(item) {
-  const type = item.instrument_type || ''
+  const type = (item.instrument_type || '').toUpperCase()
   const key = item.instrument_key || ''
   if (type.includes('INDEX') || key.includes('INDEX')) return 'INDICES'
-  switch (type) {
-    case 'EQ': return 'STOCKS'
-    case 'FUT': return 'FUTURES'
-    case 'OPT': return 'OPTIONS'
-    default: return type
-  }
+  if (type === 'EQ') return 'STOCKS'
+  if (type.startsWith('FUT')) return 'FUTURES'
+  if (type.startsWith('OPT')) return 'OPTIONS'
+  return type
 }
 
 const GROUP_ORDER = ['STOCKS', 'FUTURES', 'OPTIONS', 'INDICES']

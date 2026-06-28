@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "instructions": ["README.md", "last_update.md"],
   "agent": {
     "data-agent": {
       "description": "Upstox data pipeline: WebSocket V3 protobuf, historical API, demo ticks, timeframe aggregation",

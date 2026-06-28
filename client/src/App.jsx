@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import SymbolSearch from './components/SymbolSearch'
 import TickerStrip from './components/TickerStrip'
 import Watchlist from './components/Watchlist'
+import OptionChain from './components/OptionChain'
 
 export default function App() {
   // ── Existing state ──
@@ -74,6 +75,24 @@ export default function App() {
     { symbol: '', instrumentKey: '' },
   ])
 
+  // ── Subscribe chart instrument keys to Upstox feed ──
+  const chartSubKeysRef = useRef(new Set())
+
+  // Subscribe whenever a chart's instrument key changes
+  useEffect(() => {
+    for (const config of chartConfigs) {
+      if (!config.instrumentKey) continue
+      if (chartSubKeysRef.current.has(config.instrumentKey)) continue
+      chartSubKeysRef.current.add(config.instrumentKey)
+    }
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    for (const config of chartConfigs) {
+      if (!config.instrumentKey) continue
+      ws.send(JSON.stringify({ type: 'subscribe', instrumentKey: config.instrumentKey }))
+    }
+  }, [chartConfigs])
+
   // ── Replay state (per chart) ──
   const [chartReplay, setChartReplay] = useState({})
 
@@ -94,6 +113,38 @@ export default function App() {
   // ── Drawings per chart ──
   const [chartDrawings, setChartDrawings] = useState({})
   const [chartDrawingTools, setChartDrawingTools] = useState({})
+
+  // ── Option Chain ──
+  const [optionChainOpen, setOptionChainOpen] = useState(false)
+  const [hasOptions, setHasOptions] = useState(false)
+  const optionChainKeysRef = useRef([])
+  const subscribedRef = useRef(new Set())
+
+  // ── Active symbol derived from focused chart ──
+  const activeSymbol = chartConfigs[focusedChart]?.symbol || ''
+
+  // Check if options exist for active symbol
+  useEffect(() => {
+    if (!activeSymbol) { setHasOptions(false); return }
+    const upper = activeSymbol.toUpperCase()
+    if (upper.endsWith('CE') || upper.endsWith('PE') || upper.includes('FUT')) {
+      setHasOptions(false)
+      return
+    }
+    fetch(`/api/optionchain/check/${encodeURIComponent(activeSymbol)}`)
+      .then(r => r.json())
+      .then(data => setHasOptions(data.hasOptions || false))
+      .catch(() => setHasOptions(false))
+  }, [activeSymbol])
+
+  // Subscribe option chain instrument keys for live LTP
+  const subscribeOptionKeys = useCallback((keys) => {
+    optionChainKeysRef.current = keys
+    if (keys.length === 0) return
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(JSON.stringify({ type: 'subscribe_options', keys }))
+  }, [])
 
   // ── Persist watchlist ──
   useEffect(() => {
@@ -151,9 +202,6 @@ export default function App() {
     }
   }, [sidebarResizing, sidebarCollapsed])
 
-  // ── Active symbol derived from focused chart ──
-  const activeSymbol = chartConfigs[focusedChart]?.symbol || ''
-
   // ── WebSocket ──
   const connectWS = useCallback(() => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -162,6 +210,16 @@ export default function App() {
 
     ws.onopen = () => {
       setWsConnected(true)
+      // Re-subscribe chart instrument keys on reconnect
+      const chartKeys = chartSubKeysRef.current
+      if (chartKeys.size > 0) {
+        ws.send(JSON.stringify({ type: 'subscribe_all', keys: Array.from(chartKeys) }))
+      }
+      // Re-subscribe option chain keys on reconnect
+      const optKeys = optionChainKeysRef.current
+      if (optKeys.length > 0) {
+        ws.send(JSON.stringify({ type: 'subscribe_options', keys: optKeys }))
+      }
     }
 
     ws.onmessage = (e) => {
@@ -248,6 +306,25 @@ export default function App() {
       return next
     })
   }
+
+  // ── Load option contract into focused chart ──
+  const loadOptionContract = useCallback((tradingsymbol, instrumentKey) => {
+    setChartConfigs(prev => {
+      const next = [...prev]
+      next[focusedChart] = { symbol: tradingsymbol, instrumentKey }
+      return next
+    })
+  }, [focusedChart])
+
+  // ── Quick buy from option chain ──
+  const quickBuyOption = useCallback((tradingsymbol, instrumentKey) => {
+    setOptionChainOpen(false)
+    setChartConfigs(prev => {
+      const next = [...prev]
+      next[focusedChart] = { symbol: tradingsymbol, instrumentKey }
+      return next
+    })
+  }, [focusedChart])
 
   // ── Helper: get tick for a given symbol from cache ──
   const getTickForSymbol = (symbol) => {
@@ -405,6 +482,9 @@ export default function App() {
         // Watchlist
         watchlistOpen={watchlistOpen}
         onWatchlistToggle={() => setWatchlistOpen(o => !o)}
+        // Option Chain
+        hasOptions={hasOptions}
+        onOpenOptionChain={() => setOptionChainOpen(true)}
       />
 
       {/* Ticker Strip */}
@@ -490,6 +570,15 @@ export default function App() {
           selectSymbol(tradingsymbol, instrumentKey)
           setSearchOpen(false)
         }}
+      />
+      <OptionChain
+        isOpen={optionChainOpen}
+        onClose={() => setOptionChainOpen(false)}
+        activeSymbol={activeSymbol}
+        tickCache={tickCache}
+        onLoadContract={loadOptionContract}
+        onSubscribeKeys={subscribeOptionKeys}
+        onQuickBuy={quickBuyOption}
       />
     </div>
   )

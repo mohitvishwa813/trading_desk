@@ -21,6 +21,8 @@ const wss = new WebSocket.Server({ noServer: true });
 let upstoxWS = null;
 const browserClients = new Set();
 let instrumentsLoaded = false;
+let tickCount = 0;
+let lastTickTime = 0;
 
 // Dynamic instrument data from JSON (populated at startup)
 const instrumentsByKey = new Map();
@@ -86,7 +88,7 @@ function indexInstruments(records) {
         name: rec.name || '',
         exchange: rec.exchange || '',
         instrument_type: rec.instrument_type || '',
-        expiry: rec.expiry ? (typeof rec.expiry === 'number' ? new Date(rec.expiry * 1000).toISOString().split('T')[0] : rec.expiry) : '',
+        expiry: rec.expiry ? (typeof rec.expiry === 'number' ? new Date(rec.expiry).toISOString().split('T')[0] : rec.expiry) : '',
         strike: rec.strike_price || '',
         lot_size: rec.lot_size || 1,
       };
@@ -112,6 +114,8 @@ async function loadInstruments() {
   }
   instrumentsLoaded = true;
   console.log(`\n📊 Total instruments indexed: ${instrumentsByKey.size}\n`);
+  // Flush any pending subscriptions now that keyToSymbol is populated
+  sendUpstoxSubscription();
 }
 
 // Start loading instruments asynchronously (server can start before JSON loads)
@@ -128,41 +132,75 @@ function decodeUpstoxFeed(raw) {
     const symbol = keyToSymbol[instKey];
     if (!symbol) continue;
 
-    const ltpc = feed.ltpc || feed.fullFeed?.marketFF?.ltpc || feed.fullFeed?.indexFF?.ltpc;
-    if (!ltpc) continue;
+    const ltpc = feed.ltpc || feed.fullFeed?.marketFF?.ltpc || feed.fullFeed?.indexFF?.ltpc || feed.firstLevelWithGreeks?.ltpc;
+    const marketFF = feed.fullFeed?.marketFF;
+    const flwg = feed.firstLevelWithGreeks;
+    const greeks = marketFF?.optionGreeks || flwg?.optionGreeks;
+    // Skip only if there's no LTP AND no Greeks
+    if (!ltpc && !greeks) continue;
 
     const ohlcList = feed.fullFeed?.marketFF?.marketOHLC?.ohlc || feed.fullFeed?.indexFF?.marketOHLC?.ohlc;
     const daily = ohlcList?.find(o => o.interval === '1d');
+    const src = marketFF || flwg || {};
 
     ticks.push({
       symbol,
-      ltp: ltpc.ltp,
-      timestamp: Number(decoded.currentTs || ltpc.ltt),
+      ltp: ltpc ? ltpc.ltp : 0,
+      timestamp: Number(decoded.currentTs || ltpc?.ltt || Date.now()),
       open: daily ? daily.open : undefined,
       high: daily ? daily.high : undefined,
       low: daily ? daily.low : undefined,
-      close: ltpc.cp,
-      volume: Number(feed.fullFeed?.marketFF?.vtt || daily?.vol || 0),
+      close: ltpc ? ltpc.cp : undefined,
+      volume: Number(src.vtt || daily?.vol || 0),
+      oi: src.oi != null ? src.oi : undefined,
+      iv: src.iv != null ? src.iv : undefined,
+      greeks: greeks ? {
+        delta: greeks.delta,
+        gamma: greeks.gamma,
+        theta: greeks.theta,
+        vega: greeks.vega,
+      } : undefined,
       mode: 'LIVE',
     });
   }
   return ticks;
 }
 
+function isOptionKey(key) {
+  const inst = instrumentsByKey.get(key);
+  if (inst) {
+    const type = (inst.instrument_type || '').toUpperCase();
+    return type === 'CE' || type === 'PE';
+  }
+  return /_(OPT|FO)\|/.test(key);
+}
+
 function sendUpstoxSubscription() {
-  if (upstoxWS && upstoxWS.readyState === WebSocket.OPEN) {
-    const keys = Array.from(subscribedKeys);
-    if (keys.length === 0) return;
-    const subMsg = {
+  if (!upstoxWS || upstoxWS.readyState !== WebSocket.OPEN) return;
+  if (!instrumentsLoaded) {
+    // Wait for instrument JSON to load before subscribing (keyToSymbol must be populated)
+    setTimeout(sendUpstoxSubscription, 2000);
+    return;
+  }
+  const keys = Array.from(subscribedKeys);
+  if (keys.length === 0) return;
+  const optKeys = keys.filter(isOptionKey);
+  const regKeys = keys.filter(k => !isOptionKey(k));
+  if (regKeys.length > 0) {
+    upstoxWS.send(JSON.stringify({
       guid: 'dashboard-sub',
       method: 'sub',
-      data: {
-        mode: 'full',
-        instrumentKeys: keys,
-      },
-    };
-    upstoxWS.send(JSON.stringify(subMsg));
-    console.log(`📡 Subscribed to ${keys.length} instrument(s)`);
+      data: { mode: 'full', instrumentKeys: regKeys },
+    }));
+    console.log(`📡 Subscribed to ${regKeys.length} regular instrument(s)`);
+  }
+  if (optKeys.length > 0) {
+    upstoxWS.send(JSON.stringify({
+      guid: 'dashboard-sub-opt',
+      method: 'sub',
+      data: { mode: 'option_greeks', instrumentKeys: optKeys },
+    }));
+    console.log(`📡 Subscribed to ${optKeys.length} option instrument(s) with Greeks`);
   }
 }
 
@@ -195,6 +233,8 @@ async function connectUpstox() {
         const ticks = decodeUpstoxFeed(raw);
         for (const tick of ticks) {
           broadcast({ type: 'tick', data: tick });
+          tickCount++;
+          lastTickTime = Date.now();
         }
       } catch (e) {
         console.error('Protobuf decode error:', e.message);
@@ -254,9 +294,10 @@ app.post('/api/alert', async (req, res) => {
 app.get('/api/history/:symbol', async (req, res) => {
   const { symbol } = req.params;
 
-  const instrumentKey = symbolToKey[symbol.toUpperCase()];
+  // Resolve trading symbol → instrument key, or use raw key directly
+  const instrumentKey = symbolToKey[symbol.toUpperCase()] || symbol;
 
-  if (!instrumentKey) {
+  if (!instrumentKey || (!symbolToKey[symbol.toUpperCase()] && !instrumentsByKey.has(symbol))) {
     return res.json({ candles: [], error: 'Unknown symbol' });
   }
 
@@ -343,9 +384,10 @@ app.get('/api/instruments/search', (req, res) => {
     results = results.filter(r => r.exchange === exchange.toUpperCase());
   }
 
-  // Filter by instrument type
+  // Filter by instrument type (prefix match — Upstox uses OPTIDX, OPTSTK, FUTIDX, FUTSTK, etc.)
   if (type && type !== 'all') {
-    results = results.filter(r => r.instrument_type === type.toUpperCase());
+    const typeUpper = type.toUpperCase();
+    results = results.filter(r => (r.instrument_type || '').toUpperCase().startsWith(typeUpper));
   }
 
   // Filter by expiry date
@@ -360,17 +402,46 @@ app.get('/api/instruments/search', (req, res) => {
       (r.tradingsymbol || '').toLowerCase().includes(query) ||
       (r.name || '').toLowerCase().includes(query)
     );
-    // Sort by relevance: exact prefix match on tradingsymbol first, then substring
-    results.sort((a, b) => {
+  }
+
+  // Sort: Indices → Stocks/EQ → Futures (by expiry ASC) → Options (by expiry ASC, then strike ASC)
+  const querySort = (q || '').trim().toLowerCase();
+  results.sort((a, b) => {
+    const getPri = (t) => {
+      const type = (t || '').toUpperCase();
+      if (type.includes('INDEX')) return 0;
+      if (type === 'EQ') return 1;
+      if (type.startsWith('FUT')) return 2;
+      if (type.startsWith('OPT')) return 3;
+      return 4;
+    };
+    const aPri = getPri(a.instrument_type);
+    const bPri = getPri(b.instrument_type);
+    if (aPri !== bPri) return aPri - bPri;
+
+    // Same category — sort by expiry ASC (nearest first)
+    const aExp = a.expiry ? new Date(a.expiry).getTime() : Infinity;
+    const bExp = b.expiry ? new Date(b.expiry).getTime() : Infinity;
+    if (aExp !== bExp) return aExp - bExp;
+
+    // Same expiry — for options, sort by strike ASC
+    if (aPri === 3) {
+      const aStrike = parseFloat(a.strike) || 0;
+      const bStrike = parseFloat(b.strike) || 0;
+      if (aStrike !== bStrike) return aStrike - bStrike;
+    }
+
+    // Tiebreaker: prefix relevance match
+    if (querySort) {
       const aSym = (a.tradingsymbol || '').toLowerCase();
       const bSym = (b.tradingsymbol || '').toLowerCase();
-      const aPrefix = aSym.startsWith(query);
-      const bPrefix = bSym.startsWith(query);
+      const aPrefix = aSym.startsWith(querySort);
+      const bPrefix = bSym.startsWith(querySort);
       if (aPrefix && !bPrefix) return -1;
       if (!aPrefix && bPrefix) return 1;
-      return 0;
-    });
-  }
+    }
+    return 0;
+  });
 
   // Return top 20 matches
   const top = results.slice(0, 20).map(r => ({
@@ -385,6 +456,85 @@ app.get('/api/instruments/search', (req, res) => {
   }));
 
   res.json({ results: top });
+});
+
+// ─── Option Chain Endpoints ────────────────────────────────────────────────
+
+function detectOptionSide(inst) {
+  const type = (inst.instrument_type || '').toUpperCase();
+  if (type === 'CE') return 'CE';
+  if (type === 'PE') return 'PE';
+  return null;
+}
+
+function optionMatchesUnderlying(inst, searchTerm) {
+  const type = (inst.instrument_type || '').toUpperCase();
+  if (type !== 'CE' && type !== 'PE') return false;
+  if (!inst.expiry) return false;
+  const search = searchTerm.toUpperCase().trim();
+  const instName = (inst.name || '').toUpperCase().trim();
+  const instSymbol = (inst.tradingsymbol || '').toUpperCase();
+  // Token-level name matching: check if any search token matches any name token.
+  // This avoids false positives like "NIFTY" matching "MIDCPNIFTY".
+  const searchTokens = search.split(/\s+/).filter(Boolean);
+  const nameTokens = instName.split(/\s+/).filter(Boolean);
+  if (searchTokens.some(st => nameTokens.includes(st))) return true;
+  // Fallback: match by trading symbol prefix (e.g. "RELIANCE 1120 CE" starts with "RELIANCE")
+  if (instSymbol.startsWith(search)) return true;
+  return false;
+}
+
+// GET /api/optionchain/check/:symbol — check if options exist for this underlying
+app.get('/api/optionchain/check/:symbol', (req, res) => {
+  const { symbol } = req.params;
+  const hasOptions = instrumentsList.some(inst => optionMatchesUnderlying(inst, symbol));
+  res.json({ hasOptions });
+});
+
+// GET /api/optionchain/:underlying/expiries — list available expiry dates
+app.get('/api/optionchain/:underlying/expiries', (req, res) => {
+  const { underlying } = req.params;
+  const expiries = new Set();
+  for (const inst of instrumentsList) {
+    if (optionMatchesUnderlying(inst, underlying)) {
+      expiries.add(inst.expiry);
+    }
+  }
+  const sorted = [...expiries].sort();
+  res.json({ expiries: sorted });
+});
+
+// GET /api/optionchain/:underlying/:expiry — full option chain for a given expiry
+app.get('/api/optionchain/:underlying/:expiry', (req, res) => {
+  const { underlying, expiry } = req.params;
+
+  const options = instrumentsList.filter(inst => {
+    return optionMatchesUnderlying(inst, underlying) && inst.expiry === expiry;
+  });
+
+  // Group by strike
+  const strikes = {};
+  for (const opt of options) {
+    const strike = parseFloat(opt.strike) || 0;
+    if (!strikes[strike]) strikes[strike] = { strike, ce: null, pe: null };
+    const side = detectOptionSide(opt);
+    if (side === 'CE') {
+      strikes[strike].ce = {
+        instrument_key: opt.instrument_key,
+        tradingsymbol: opt.tradingsymbol,
+        ltp: null,
+      };
+    } else if (side === 'PE') {
+      strikes[strike].pe = {
+        instrument_key: opt.instrument_key,
+        tradingsymbol: opt.tradingsymbol,
+        ltp: null,
+      };
+    }
+  }
+
+  const chain = Object.values(strikes).sort((a, b) => a.strike - b.strike);
+  res.json({ chain, underlying: underlying.toUpperCase(), expiry });
 });
 
 // ─── Place Order Endpoint ───────────────────────────────────────────────────
@@ -428,6 +578,23 @@ app.post('/api/order', async (req, res) => {
   }
 });
 
+// Debug endpoint to check server state
+app.get('/api/debug', (req, res) => {
+  const allKeys = Array.from(subscribedKeys);
+  const sampleKeys = allKeys.slice(0, 10);
+  res.json({
+    instrumentsLoaded,
+    subscribedKeys: allKeys.length,
+    optKeys: allKeys.filter(k => /_(OPT|FO)\|/.test(k)).length,
+    upstoxWSOpen: upstoxWS ? upstoxWS.readyState === WebSocket.OPEN : false,
+    browserClients: browserClients.size,
+    instrumentsByKey: instrumentsByKey.size,
+    tickCount,
+    lastTickTime: lastTickTime ? new Date(lastTickTime).toISOString() : 'never',
+    sampleKeys,
+  });
+});
+
 // SPA catch-all: serve React index.html for any non-API route
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client', 'dist', 'index.html'));
@@ -462,8 +629,32 @@ wss.on('connection', (ws) => {
         const key = msg.instrumentKey;
         if (!subscribedKeys.has(key)) {
           subscribedKeys.add(key);
-          console.log(`➕ Subscribed to new key: ${key}`);
-          // Send updated subscription to Upstox
+          console.log(`➕ Subscribed: ${key}`);
+          sendUpstoxSubscription();
+        }
+      }
+      if (msg.type === 'subscribe_all' && Array.isArray(msg.keys)) {
+        let changed = false;
+        for (const key of msg.keys) {
+          if (!subscribedKeys.has(key)) {
+            subscribedKeys.add(key);
+            changed = true;
+          }
+        }
+        if (changed) {
+          sendUpstoxSubscription();
+        }
+      }
+      if (msg.type === 'subscribe_options' && Array.isArray(msg.keys)) {
+        // Remove old option keys, add new ones, then re-subscribe
+        const oldOpts = [...subscribedKeys].filter(k => isOptionKey(k));
+        for (const k of oldOpts) subscribedKeys.delete(k);
+        let changed = oldOpts.length > 0;
+        for (const key of msg.keys) {
+          if (!subscribedKeys.has(key)) { subscribedKeys.add(key); changed = true; }
+        }
+        if (changed) {
+          console.log(`🔄 Option subscription updated: ${msg.keys.length} keys`);
           sendUpstoxSubscription();
         }
       }

@@ -17,6 +17,9 @@ export default function TopBar({
   // Watchlist
   watchlistOpen,
   onWatchlistToggle,
+  // Option Chain
+  hasOptions = false,
+  onOpenOptionChain = () => {},
 }) {
   const [time, setTime] = useState(new Date().toLocaleTimeString())
   useEffect(() => {
@@ -53,6 +56,19 @@ export default function TopBar({
           <polyline points="6 9 12 15 18 9" />
         </svg>
         <kbd className="hidden md:inline text-[9px] text-muted/40 border border-border rounded px-1 py-0.5 ml-0.5">Ctrl+K</kbd>
+      </button>
+
+      {/* Option Chain Button */}
+      <button
+        onClick={() => onOpenOptionChain()}
+        className={`px-2.5 py-1.5 rounded text-[11px] font-bold tracking-wide border transition-colors ${
+          hasOptions
+            ? 'bg-accent/15 text-accent border-accent/40 hover:bg-accent/30'
+            : 'bg-transparent text-muted border-border hover:border-accent/30 hover:text-accent'
+        }`}
+        aria-label="Open option chain"
+      >
+        OC
       </button>
 
       {/* Layout Mode Switcher */}

@@ -1,6 +1,6 @@
 # Last Update — Project Status
 
-**Date:** Sunday, June 28, 2026
+**Date:** Sunday, June 28, 2026 *(Updated: synced with codebase)*
 
 ---
 
@@ -51,7 +51,9 @@ Convert the static HTML dashboard to a React + Tailwind CSS application and fix 
 - **Replay mode** — Step through historical candle data
 - **Context menu** — Right-click reset chart
 - **Watchlist panel** — Add/remove symbols, auto-populates first 6 from instrument list
-- **Search modal** — Debounced search with category filtering, default query "NIFTY50"
+- **Option Chain panel** — CE/PE grouped by strike, live LTP via Greeks subscription, quick buy
+- **Order placement** — Place real BUY/SELL orders via Upstox V2 API (MIS/CNC, MARKET/LIMIT/SL)
+- **Search modal** — Debounced search with category filtering (Index/EQ/Futures/Options), exchange/type/expiry filters, default query "NIFTY50"
 - **Auto-select NIFTY** — On symbol map load, picks NIFTY (exact match first, then prefix)
 - **Scroll wheel zoom** — Native lightweight-charts zoom (UP=zoom IN, DOWN=zoom OUT)
 - **Symbol persistence** — Per-chart symbol saved across page reloads
@@ -90,7 +92,8 @@ upstox-dashboard/
     │   ├── DrawingTools.jsx ← Left-side tool strip (Trend Line, Fib, etc.)
     │   ├── CandleSelector.jsx ← Chart style picker dropdown
     │   ├── Watchlist.jsx  ← Left-side watchlist panel with add/remove
-    │   └── SymbolSearch.jsx ← Modal search with NIFTY50 default and category filter
+    │   ├── SymbolSearch.jsx ← Modal search with NIFTY50 default and category filter
+    │   └── OptionChain.jsx ← CE/PE strikes grouped by expiry, live LTP, quick buy
         └── dist/               ← Built frontend (served by server.js)
 ```
 
@@ -106,6 +109,11 @@ upstox-dashboard/
 7. **Resizable sidebar** — Splitter div with `cursor-col-resize`, `mousedown`/`touchstart` drag, double-click collapse/expand, width/state persisted in `localStorage`
 8. **NIFTY50 default search** — SymbolSearch uses initial query `NIFTY50` + `key` prop remount to avoid race conditions
 9. **Auto-select "NIFTY"** — After instrument map loads, picks exact "NIFTY" → first "NIFTY…" prefix → first key as default chart symbol
+10. **Option Chain + Greeks** — Option chain endpoint groups CE/PE by strike from dynamic instrument JSON; WebSocket subscribes with `mode: 'option_greeks'` for live delta/gamma/theta/vega
+11. **Order placement** — `POST /api/order` proxies to Upstox V2 `/v2/order/place` with MIS/CNC product, MARKET/LIMIT/SL order types, DAY validity
+12. **Instrument search** — Server-side filtering by exchange, instrument type prefix (`OPT`/`FUT`/`EQ`/`INDEX`), expiry date, and query text; sorted by category → expiry → strike
+13. **Option_key detection** — `isOptionKey()` checks instrument_type for `CE`/`PE` or falls back to `_FO|` pattern in key string
+14. **Subscribe_options WS message** — Browser sends `{ type: 'subscribe_options', keys: [...] }` to swap option keys (old removed, new added) in the Upstox feed
 
 ---
 
@@ -135,6 +143,12 @@ npm start
 | POST | `/api/mode` | Set mode (`{ mode: 'live' | 'demo' }`) |
 | GET | `/api/history/:symbol` | Get historical OHLC candles |
 | POST | `/api/alert` | Send strategy alert to Make.com |
+| GET | `/api/instruments/symbols` | Get symbol → instrument_key map |
+| GET | `/api/instruments/search` | Search instruments by query, exchange, type, expiry |
+| GET | `/api/optionchain/check/:symbol` | Check if options exist for underlying |
+| GET | `/api/optionchain/:underlying/expiries` | List available expiry dates |
+| GET | `/api/optionchain/:underlying/:expiry` | Full option chain (CE/PE grouped by strike) |
+| POST | `/api/order` | Place order via Upstox V2 API |
 
 ---
 
