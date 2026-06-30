@@ -60,8 +60,14 @@ export default function App() {
     setWatchlistItems(prev => {
       // If we already have items, ensure BTCUSD is prepended if not present
       if (prev.length > 0) {
-        if (prev.includes('BTCUSD')) return prev
-        return ['BTCUSD', ...prev]
+        const migrated = prev.map(sym => {
+          let s = sym.toUpperCase().replace(/[\s_-]/g, '')
+          if (s === 'NIFTY50') return 'NIFTY'
+          if (s === 'STATEBANK' || s === 'STATEBANKOFINDIA') return 'SBIN'
+          return sym
+        })
+        if (migrated.includes('BTCUSD')) return migrated
+        return ['BTCUSD', ...migrated]
       }
       // Otherwise populate from loaded symbols but put BTCUSD first
       const remaining = keys.filter(k => k !== 'BTCUSD').slice(0, 5)
@@ -95,7 +101,17 @@ export default function App() {
   const [watchlistItems, setWatchlistItems] = useState(() => {
     try {
       const saved = localStorage.getItem('watchlistItems')
-      return saved ? JSON.parse(saved) : []
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        // Auto-migrate legacy alias symbols to real exchange trading symbols
+        return parsed.map(sym => {
+          let s = sym.toUpperCase().replace(/[\s_-]/g, '')
+          if (s === 'NIFTY50') return 'NIFTY'
+          if (s === 'STATEBANK' || s === 'STATEBANKOFINDIA') return 'SBIN'
+          return sym
+        })
+      }
+      return []
     } catch {
       return []
     }
@@ -342,11 +358,12 @@ export default function App() {
   const selectSymbol = (symbol, instrumentKey) => {
     setChartConfigs(prev => {
       const next = [...prev]
-      let resolvedSymbol = (symbol || '').toUpperCase().replace(/[\s_-]/g, '')
-      if (resolvedSymbol === 'NIFTY50') resolvedSymbol = 'NIFTY'
-      if (resolvedSymbol === 'STATEBANK' || resolvedSymbol === 'STATEBANKOFINDIA') resolvedSymbol = 'SBIN'
+      let resolvedSymbol = (symbol || '').trim()
+      const norm = resolvedSymbol.toUpperCase().replace(/[\s_-]/g, '')
+      if (norm === 'NIFTY50') resolvedSymbol = 'NIFTY'
+      if (norm === 'STATEBANK' || norm === 'STATEBANKOFINDIA') resolvedSymbol = 'SBIN'
 
-      const key = instrumentKey || getInstrumentKey(resolvedSymbol) || getInstrumentKey(symbol)
+      const key = instrumentKey || getInstrumentKey(norm) || getInstrumentKey(symbol)
       next[focusedChart] = { symbol: resolvedSymbol, instrumentKey: key }
       return next
     })

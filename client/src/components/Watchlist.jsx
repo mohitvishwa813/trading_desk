@@ -11,7 +11,9 @@ export default function Watchlist({ isOpen, onClose, items, onItemsChange, price
   }, [isOpen])
 
   const addItem = () => {
-    const s = newSymbol.trim().toUpperCase()
+    let s = newSymbol.trim().toUpperCase().replace(/[\s_-]/g, '')
+    if (s === 'NIFTY50') s = 'NIFTY'
+    if (s === 'STATEBANK' || s === 'STATEBANKOFINDIA') s = 'SBIN'
     if (s && !items.includes(s)) {
       onItemsChange(prev => [...prev, s])
     }

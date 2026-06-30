@@ -99,8 +99,10 @@ function indexInstruments(records) {
       instrumentsByKey.set(key, normalized);
       instrumentsList.push(normalized);
       const tsym = normalized.tradingsymbol;
+      const cleanTsym = tsym.toUpperCase().replace(/[\s_-]/g, '');
       if (!keyToSymbol[key]) keyToSymbol[key] = tsym;
       if (!symbolToKey[tsym]) symbolToKey[tsym] = key;
+      if (!symbolToKey[cleanTsym]) symbolToKey[cleanTsym] = key;
       added++;
     }
   }
@@ -186,6 +188,30 @@ async function loadInstruments() {
 
   instrumentsLoaded = true;
   console.log(`\n📊 Total instruments indexed: ${instrumentsByKey.size}\n`);
+
+  // Dynamically resolve the active MCX Crude Oil futures contract key
+  const activeCrudeKey = (() => {
+    const mcxCrude = instrumentsList.filter(inst => 
+      inst.exchange && inst.exchange.toUpperCase().startsWith('MCX') && 
+      inst.instrument_type && inst.instrument_type.toUpperCase() === 'FUT' &&
+      inst.tradingsymbol && inst.tradingsymbol.toUpperCase().startsWith('CRUDEOIL FUT')
+    );
+    if (mcxCrude.length === 0) return 'MCX_FO|CRUDEOIL';
+    mcxCrude.sort((a, b) => {
+      if (!a.expiry) return 1;
+      if (!b.expiry) return -1;
+      return new Date(a.expiry) - new Date(b.expiry);
+    });
+    return mcxCrude[0].instrument_key;
+  })();
+
+  if (activeCrudeKey && activeCrudeKey !== 'MCX_FO|CRUDEOIL') {
+    console.log(`🛢️ Dynamically resolved active Crude Oil contract: ${activeCrudeKey}`);
+    symbolToKey['CRUDEOIL'] = activeCrudeKey;
+    keyToSymbol[activeCrudeKey] = 'CRUDEOIL';
+    const crudeInst = INSTRUMENTS.find(i => i.symbol === 'CRUDEOIL');
+    if (crudeInst) crudeInst.key = activeCrudeKey;
+  }
   // If in demo mode, restart ticks so symbol names resolve to real trading symbols
   if (currentMode === 'demo') {
     startDemoTicks();
@@ -447,8 +473,8 @@ app.get('/api/history/:symbol', async (req, res) => {
   if (cleanSymbol === 'NIFTY50') cleanSymbol = 'NIFTY';
   if (cleanSymbol === 'STATEBANK' || cleanSymbol === 'STATEBANKOFINDIA') cleanSymbol = 'SBIN';
 
-  // Resolve trading symbol → instrument key, or use raw key directly
-  const instrumentKey = symbolToKey[cleanSymbol] || symbolToKey[symbol.toUpperCase()] || symbol;
+  // Resolve trading symbol → instrument key, or use query parameter key first
+  const instrumentKey = req.query.key || symbolToKey[cleanSymbol] || symbolToKey[symbol.toUpperCase()] || symbol;
 
   // Handle BTCUSD from Binance
   if (symbol.toUpperCase() === 'BTCUSD' || instrumentKey === 'BINANCE|BTCUSD') {
@@ -479,10 +505,25 @@ app.get('/api/history/:symbol', async (req, res) => {
     return res.json({ candles: [], error: 'No token' });
   }
 
-  // Use a conservative date range for intraday (14 days to avoid V2/V3 400 errors)
   const endDate = new Date();
   const startDate = new Date();
-  startDate.setFullYear(startDate.getFullYear() - 1);
+
+  const instInfo = instrumentsByKey.get(instrumentKey);
+  const isFO = instInfo && (
+    (instInfo.instrument_type || '').toUpperCase().startsWith('FUT') ||
+    (instInfo.instrument_type || '').toUpperCase().startsWith('OPT') ||
+    (instInfo.instrument_type || '').toUpperCase() === 'CE' ||
+    (instInfo.instrument_type || '').toUpperCase() === 'PE' ||
+    (instInfo.exchange || '').toUpperCase().startsWith('MCX') ||
+    (instInfo.exchange || '').toUpperCase().startsWith('NCD')
+  );
+  const isFOTarget = isFO || /(_FUT|_OPT|\|FUT|\|OPT|MCX|NCD|CE|PE)/i.test(instrumentKey);
+
+  if (isFOTarget) {
+    startDate.setDate(startDate.getDate() - 30);
+  } else {
+    startDate.setFullYear(startDate.getFullYear() - 1);
+  }
 
   const allCandles = [];
   let currentStart = new Date(startDate);
@@ -519,6 +560,18 @@ app.get('/api/history/:symbol', async (req, res) => {
     }
 
     currentStart = new Date(currentEnd);
+  }
+
+  // Fetch today's intraday candles to cover the current active trading day
+  try {
+    const intradayUrl = `https://api.upstox.com/v2/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/1minute`;
+    const intraResp = await axios.get(intradayUrl, {
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
+    });
+    const rawIntraday = intraResp.data?.data?.candles || [];
+    allCandles.push(...rawIntraday);
+  } catch (intraErr) {
+    // Silently ignore if intraday endpoint is temporarily unavailable or returns empty
   }
 
   if (allCandles.length) {
@@ -609,7 +662,31 @@ app.get('/api/instruments/search', (req, res) => {
 
   // Sort: Indices → Stocks/EQ → Futures (by expiry ASC) → Options (by expiry ASC, then strike ASC)
   const querySort = (q || '').trim().toLowerCase();
+
+  // Prioritize MCX for commodities (CRUDEOIL, GOLD, etc.) and NSE/BSE for equities/indices
+  const isCommodityQuery = querySort.includes('crude') || 
+                            querySort.includes('gold') || 
+                            querySort.includes('silver') || 
+                            querySort.includes('copper') || 
+                            querySort.includes('zinc');
+
   results.sort((a, b) => {
+    const getExPri = (ex) => {
+      const upper = (ex || '').toUpperCase();
+      if (isCommodityQuery) {
+        if (upper.startsWith('MCX')) return 0;
+        if (upper.startsWith('NSE')) return 1;
+        return 2;
+      } else {
+        if (upper.startsWith('NSE')) return 0;
+        if (upper.startsWith('BSE')) return 1;
+        return 2;
+      }
+    };
+    const aExPri = getExPri(a.exchange);
+    const bExPri = getExPri(b.exchange);
+    if (aExPri !== bExPri) return aExPri - bExPri;
+
     const getPri = (t) => {
       const type = (t || '').toUpperCase();
       if (type.includes('INDEX')) return 0;

@@ -9,7 +9,7 @@ export default function TickerStrip({ instruments, prices, openPrices, activeSym
         const price = prices[resolvedSymbol] || prices[sym]
         const open = openPrices[resolvedSymbol] || openPrices[sym] || price
         const change = price ? price - open : 0
-        const changePct = open ? ((change / open) * 100).toFixed(2) : '0.00'
+        const changePct = open && Number.isFinite(open) && open !== 0 ? ((change / open) * 100).toFixed(2) : '0.00'
         const dir = change >= 0 ? 'text-green' : 'text-red'
 
         return (

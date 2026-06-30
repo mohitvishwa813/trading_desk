@@ -23,7 +23,23 @@ function aggregateCandles(candles, tfSec) {
   const result = []
   let current = null
   for (const c of candles) {
-    const bucket = Math.floor(c.time / tfSec) * tfSec
+    let bucket
+    if (tfSec < 86400) {
+      // Align to Indian Market Open (09:15 AM local time)
+      const date = new Date(c.time * 1000)
+      date.setHours(0, 0, 0, 0)
+      const midnight = Math.floor(date.getTime() / 1000)
+      const elapsed = c.time - midnight
+      const marketOpen = 9 * 3600 + 15 * 60 // 33300 seconds
+      const bucketElapsed = marketOpen + Math.floor((elapsed - marketOpen) / tfSec) * tfSec
+      bucket = midnight + bucketElapsed
+    } else {
+      // Daily/Weekly/Monthly: align to midnight local time
+      const date = new Date(c.time * 1000)
+      date.setHours(0, 0, 0, 0)
+      bucket = Math.floor(date.getTime() / 1000)
+    }
+
     if (!current || current.time !== bucket) {
       if (current) result.push(current)
       current = {
@@ -1001,14 +1017,19 @@ export default function ChartPanel({
 
     ;(async () => {
       try {
-        const res = await fetch(`/api/history/${encodeURIComponent(activeSymbol)}?tf=${tf}`)
+        const res = await fetch(`/api/history/${encodeURIComponent(activeSymbol)}?tf=${tf}&key=${encodeURIComponent(instrumentKey || '')}`)
         const { candles } = await res.json()
         if (id !== fetchIdRef.current) return
 
         if (candles?.length) {
-          baseCandlesRef.current = candles
+          const offset = -new Date().getTimezoneOffset() * 60
+          const localCandles = candles.map(c => ({
+            ...c,
+            time: c.time + offset
+          }))
+          baseCandlesRef.current = localCandles
           // Use chartStyleRef to avoid stale closure
-          refreshChart(candles, chartStyleRef.current)
+          refreshChart(localCandles, chartStyleRef.current)
         }
       } catch {
         // silently fail
@@ -1042,8 +1063,23 @@ export default function ChartPanel({
     if (tick.mode && tick.mode.toLowerCase() !== modeRef.current.toLowerCase()) return
 
     const tfSec = TF_SECONDS[tf] || 300
-    const nowSec = Math.floor((tick.timestamp || Date.now()) / 1000)
-    const candleTime = Math.floor(nowSec / tfSec) * tfSec
+    const offset = -new Date().getTimezoneOffset() * 60
+    const nowSec = Math.floor((tick.timestamp || Date.now()) / 1000) + offset
+    
+    let candleTime
+    if (tfSec < 86400) {
+      const date = new Date(nowSec * 1000)
+      date.setHours(0, 0, 0, 0)
+      const midnight = Math.floor(date.getTime() / 1000)
+      const elapsed = nowSec - midnight
+      const marketOpen = 9 * 3600 + 15 * 60 // 33300 seconds
+      const bucketElapsed = marketOpen + Math.floor((elapsed - marketOpen) / tfSec) * tfSec
+      candleTime = midnight + bucketElapsed
+    } else {
+      const date = new Date(nowSec * 1000)
+      date.setHours(0, 0, 0, 0)
+      candleTime = Math.floor(date.getTime() / 1000)
+    }
 
     // Use instrumentKey as buffer key (unique across symbols)
     const bufKey = instrumentKey || activeSymbol
@@ -1481,7 +1517,7 @@ export default function ChartPanel({
                   <div className="w-px h-4 bg-[#2a2e39]" />
                   <span className="text-sm font-bold text-white font-mono tabular-nums">{tick.ltp?.toFixed(2)}</span>
                   <div className="w-px h-4 bg-[#2a2e39]" />
-                  {tick.close != null && (() => {
+                   {tick.close && Number.isFinite(tick.close) ? (() => {
                     const chg = tick.ltp - tick.close
                     const pct = (chg / tick.close) * 100
                     const color = chg >= 0 ? 'text-green' : 'text-red'
@@ -1492,19 +1528,27 @@ export default function ChartPanel({
                         <span className="opacity-80">({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
                       </span>
                     )
-                  })()}
+                  })() : (
+                    <span className="text-[11px] font-semibold font-mono tabular-nums text-muted/60">
+                      0.00 (0.00%)
+                    </span>
+                  )}
                 </>
               )}
-              {/* Candle countdown timer — always visible */}
-              <div className="w-px h-4 bg-[#2a2e39]" />
-              <div className="flex items-center gap-1">
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-green/70 shrink-0">
-                  <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
-                </svg>
-                <span className={`text-[11px] font-mono font-bold tabular-nums ${
-                  countdown.startsWith('0:0') ? 'text-yellow' : 'text-green'
-                }`}>{countdown}</span>
-              </div>
+              {/* Candle countdown timer — only visible when live */}
+              {isLive && (
+                <>
+                  <div className="w-px h-4 bg-[#2a2e39]" />
+                  <div className="flex items-center gap-1">
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-green/70 shrink-0">
+                      <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                    </svg>
+                    <span className={`text-[11px] font-mono font-bold tabular-nums ${
+                      countdown.startsWith('0:0') ? 'text-yellow' : 'text-green'
+                    }`}>{countdown}</span>
+                  </div>
+                </>
+              )}
               {/* LIVE / HIST — embedded in strip */}
               <div className="w-px h-4 bg-[#2a2e39]" />
               <div className={`flex items-center gap-1 text-[10px] font-bold tracking-widest ${
@@ -1532,7 +1576,7 @@ export default function ChartPanel({
         )}
 
         {/* ── TradingView-style candle countdown label (right price axis) ── */}
-        {activeSymbol && (
+        {activeSymbol && isLive && (
           <div
             className="absolute z-20 pointer-events-none select-none"
             style={{
