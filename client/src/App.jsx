@@ -229,9 +229,11 @@ export default function App() {
   // ── WebSocket ──
   const connectWS = useCallback(() => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const host = import.meta.env.DEV
-      ? `${window.location.hostname || '127.0.0.1'}:3000`
-      : location.host
+    const devHost = import.meta.env.VITE_BACKEND_URL
+      ? import.meta.env.VITE_BACKEND_URL.replace(/^https?:\/\//, '')
+      : `${window.location.hostname || '127.0.0.1'}:3000`
+
+    const host = import.meta.env.DEV ? devHost : location.host
     const ws = new WebSocket(`${proto}://${host}`)
 
     ws.onopen = () => {
