@@ -24,7 +24,7 @@ function getGroupKey(item) {
 const GROUP_ORDER = ['STOCKS', 'FUTURES', 'OPTIONS', 'INDICES']
 
 export default function SymbolSearch({ isOpen, onClose, onSelect }) {
-  const [query, setQuery] = useState('NIFTY50')
+  const [query, setQuery] = useState('NIFTY')
   const [category, setCategory] = useState('All')
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
@@ -63,7 +63,7 @@ export default function SymbolSearch({ isOpen, onClose, onSelect }) {
   // reset state when opening the modal
   useEffect(() => {
     if (isOpen) {
-      setQuery('NIFTY50')
+      setQuery('NIFTY')
       setCategory('All')
       setResults([])
       setLoading(false)

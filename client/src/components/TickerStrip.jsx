@@ -2,8 +2,12 @@ export default function TickerStrip({ instruments, prices, openPrices, activeSym
   return (
     <div className="flex bg-surface border-b border-border shrink-0 overflow-x-auto">
       {instruments.map(sym => {
-        const price = prices[sym]
-        const open = openPrices[sym] || price
+        let resolvedSymbol = sym.toUpperCase().replace(/[\s_-]/g, '')
+        if (resolvedSymbol === 'NIFTY50') resolvedSymbol = 'NIFTY'
+        if (resolvedSymbol === 'STATEBANK' || resolvedSymbol === 'STATEBANKOFINDIA') resolvedSymbol = 'SBIN'
+
+        const price = prices[resolvedSymbol] || prices[sym]
+        const open = openPrices[resolvedSymbol] || openPrices[sym] || price
         const change = price ? price - open : 0
         const changePct = open ? ((change / open) * 100).toFixed(2) : '0.00'
         const dir = change >= 0 ? 'text-green' : 'text-red'

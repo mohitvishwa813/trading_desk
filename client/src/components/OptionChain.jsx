@@ -358,7 +358,18 @@ export default function OptionChain({
                   return (
                     <tr
                       key={row.strike}
-                      onClick={() => setSelectedStrike(prev => prev === row.strike ? null : row.strike)}
+                      onClick={() => {
+                        const wasSelected = selectedStrike === row.strike
+                        setSelectedStrike(prev => prev === row.strike ? null : row.strike)
+                        if (!wasSelected) {
+                          if (row.ce) {
+                            loadContract(row.ce.tradingsymbol, row.ce.instrument_key)
+                          } else if (row.pe) {
+                            loadContract(row.pe.tradingsymbol, row.pe.instrument_key)
+                          }
+                          onClose()
+                        }
+                      }}
                       className={`group border-b border-border/15 transition-colors cursor-pointer select-none ${bgClass} ${
                         sel ? 'ring-1 ring-inset ring-accent/50' : ''
                       } hover:bg-accent/8`}

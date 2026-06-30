@@ -10,6 +10,7 @@ import OptionChain from './components/OptionChain'
 export default function App() {
   // ── Existing state ──
   const [wsConnected, setWsConnected] = useState(false)
+  const [mode, setMode] = useState('live') // 'live' | 'demo' — synced from server
   const [prices, setPrices] = useState({})
   const [openPrices, setOpenPrices] = useState({})
   const [tick, setTick] = useState(null)
@@ -35,32 +36,40 @@ export default function App() {
       .catch(() => {})
   }, [])
 
+  // Sync mode from server on mount
+  useEffect(() => {
+    fetch('/api/mode')
+      .then(r => r.json())
+      .then(d => setMode(d.mode || 'live'))
+      .catch(() => {})
+  }, [])
+
   // Auto-select first available symbol when map loads (no hardcoded defaults)
   useEffect(() => {
     if (!symbolsReady) return
     const keys = Object.keys(symbolMap)
     if (keys.length === 0) return
-    const pickSymbol = () => {
-      const nifty = keys.find(k => k === 'NIFTY')
-      if (nifty) return nifty
-      const niftyLike = keys.find(k => k.startsWith('NIFTY'))
-      if (niftyLike) return niftyLike
-      return keys[0]
-    }
+
     setChartConfigs(prev => {
       if (prev[0].symbol) return prev // already has a symbol
-      const sym = pickSymbol()
       const next = [...prev]
-      next[0] = { symbol: sym, instrumentKey: symbolMap[sym] }
+      next[0] = { symbol: 'BTCUSD', instrumentKey: 'BINANCE|BTCUSD' }
       return next
     })
+
     setWatchlistItems(prev => {
-      if (prev.length > 0) return prev // already has items
-      return keys.slice(0, 6) // populate watchlist from available symbols
+      // If we already have items, ensure BTCUSD is prepended if not present
+      if (prev.length > 0) {
+        if (prev.includes('BTCUSD')) return prev
+        return ['BTCUSD', ...prev]
+      }
+      // Otherwise populate from loaded symbols but put BTCUSD first
+      const remaining = keys.filter(k => k !== 'BTCUSD').slice(0, 5)
+      return ['BTCUSD', ...remaining]
     })
   }, [symbolsReady, symbolMap])
 
-  const getInstrumentKey = (symbol) => symbolMap[symbol] || symbol
+  const getInstrumentKey = useCallback((symbol) => symbolMap[symbol] || symbol, [symbolMap])
 
   // ── Tick cache for multi-chart ──
   const [tickCache, setTickCache] = useState({})
@@ -78,21 +87,6 @@ export default function App() {
   // ── Subscribe chart instrument keys to Upstox feed ──
   const chartSubKeysRef = useRef(new Set())
 
-  // Subscribe whenever a chart's instrument key changes
-  useEffect(() => {
-    for (const config of chartConfigs) {
-      if (!config.instrumentKey) continue
-      if (chartSubKeysRef.current.has(config.instrumentKey)) continue
-      chartSubKeysRef.current.add(config.instrumentKey)
-    }
-    const ws = wsRef.current
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    for (const config of chartConfigs) {
-      if (!config.instrumentKey) continue
-      ws.send(JSON.stringify({ type: 'subscribe', instrumentKey: config.instrumentKey }))
-    }
-  }, [chartConfigs])
-
   // ── Replay state (per chart) ──
   const [chartReplay, setChartReplay] = useState({})
 
@@ -106,6 +100,36 @@ export default function App() {
       return []
     }
   })
+
+  // Subscribe whenever a chart or watchlist changes, or WebSocket connects
+  useEffect(() => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN || !wsConnected) return
+
+    const keysToSub = new Set()
+
+    // 1. Chart keys
+    for (const config of chartConfigs) {
+      if (config.instrumentKey) {
+        keysToSub.add(config.instrumentKey)
+        chartSubKeysRef.current.add(config.instrumentKey)
+      }
+    }
+
+    // 2. Watchlist keys
+    for (const sym of watchlistItems) {
+      let resolvedSymbol = sym.toUpperCase().replace(/[\s_-]/g, '')
+      if (resolvedSymbol === 'NIFTY50') resolvedSymbol = 'NIFTY'
+      if (resolvedSymbol === 'STATEBANK' || resolvedSymbol === 'STATEBANKOFINDIA') resolvedSymbol = 'SBIN'
+
+      const key = getInstrumentKey(resolvedSymbol) || getInstrumentKey(sym)
+      if (key) keysToSub.add(key)
+    }
+
+    if (keysToSub.size > 0) {
+      ws.send(JSON.stringify({ type: 'subscribe_all', keys: Array.from(keysToSub) }))
+    }
+  }, [chartConfigs, watchlistItems, getInstrumentKey, wsConnected])
 
   // ── Indicators per chart ──
   const [chartIndicators, setChartIndicators] = useState({})
@@ -205,7 +229,9 @@ export default function App() {
   // ── WebSocket ──
   const connectWS = useCallback(() => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const host = import.meta.env.DEV ? 'localhost:3000' : location.host
+    const host = import.meta.env.DEV
+      ? `${window.location.hostname || '127.0.0.1'}:3000`
+      : location.host
     const ws = new WebSocket(`${proto}://${host}`)
 
     ws.onopen = () => {
@@ -229,12 +255,25 @@ export default function App() {
           const data = msg.data
           setPrices(prev => ({ ...prev, [data.symbol]: data.ltp }))
           setTick(data)
-          // Build tick cache for multi-chart
-          setTickCache(prev => ({ ...prev, [data.symbol]: data }))
+          // Build tick cache keyed by instrumentKey (unique, survives symbol name mismatches)
+          const cacheKey = data.instrumentKey || data.symbol
+          setTickCache(prev => ({ ...prev, [cacheKey]: data }))
           // Track opening price (first tick per symbol)
           setOpenPrices(prev =>
             prev[data.symbol] !== undefined ? prev : { ...prev, [data.symbol]: data.ltp }
           )
+        }
+        if (msg.type === 'mode_change') {
+          // Update mode state so charts guard against cross-mode ticks
+          setMode(msg.mode || 'live')
+          // Clear stale prices so P&L doesn't show wrong values
+          setOpenPrices({})
+          setPrices({})
+          // Re-subscribe chart instrument keys when mode toggles on server
+          const chartKeys = chartSubKeysRef.current
+          if (chartKeys.size > 0 && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'subscribe_all', keys: Array.from(chartKeys) }))
+          }
         }
       } catch {}
     }
@@ -301,8 +340,12 @@ export default function App() {
   const selectSymbol = (symbol, instrumentKey) => {
     setChartConfigs(prev => {
       const next = [...prev]
-      const key = instrumentKey || getInstrumentKey(symbol)
-      next[focusedChart] = { symbol, instrumentKey: key }
+      let resolvedSymbol = (symbol || '').toUpperCase().replace(/[\s_-]/g, '')
+      if (resolvedSymbol === 'NIFTY50') resolvedSymbol = 'NIFTY'
+      if (resolvedSymbol === 'STATEBANK' || resolvedSymbol === 'STATEBANKOFINDIA') resolvedSymbol = 'SBIN'
+
+      const key = instrumentKey || getInstrumentKey(resolvedSymbol) || getInstrumentKey(symbol)
+      next[focusedChart] = { symbol: resolvedSymbol, instrumentKey: key }
       return next
     })
   }
@@ -326,9 +369,11 @@ export default function App() {
     })
   }, [focusedChart])
 
-  // ── Helper: get tick for a given symbol from cache ──
-  const getTickForSymbol = (symbol) => {
-    return tickCache[symbol] || null
+  // ── Helper: get tick by instrumentKey (preferred) or symbol from cache ──
+  const getTickForSymbol = (symbol, instrumentKey) => {
+    if (instrumentKey && tickCache[instrumentKey]) return tickCache[instrumentKey]
+    if (symbol && tickCache[symbol]) return tickCache[symbol]
+    return null
   }
 
   // ── Render chart panels based on layout mode ──
@@ -339,7 +384,7 @@ export default function App() {
     const panels = []
     for (let i = 0; i < numCharts; i++) {
       const config = chartConfigs[i] || { symbol: '', instrumentKey: '' }
-      const chartTick = getTickForSymbol(config.symbol)
+      const chartTick = getTickForSymbol(config.symbol, config.instrumentKey)
 
       panels.push(
         <ChartPanel
@@ -351,6 +396,7 @@ export default function App() {
           chartIndex={i}
           isFocused={focusedChart === i}
           onFocus={() => setFocusedChart(i)}
+          mode={mode}
           onSymbolChange={(symbol, instrumentKey) => {
             setChartConfigs(prev => {
               const next = [...prev]
@@ -511,12 +557,7 @@ export default function App() {
             onItemsChange={setWatchlistItems}
             prices={prices}
             onSelectSymbol={(symbol) => {
-              const instrumentKey = getInstrumentKey(symbol)
-              setChartConfigs(prev => {
-                const next = [...prev]
-                next[focusedChart] = { symbol, instrumentKey }
-                return next
-              })
+              selectSymbol(symbol)
               setWatchlistOpen(false)
             }}
           />
@@ -542,7 +583,7 @@ export default function App() {
 
         {/* Sidebar (right) */}
         <div
-          className="shrink-0 overflow-hidden"
+          className="shrink-0 overflow-y-auto"
           style={{
             width: sidebarWidth,
             transition: sidebarResizing ? 'none' : 'width 180ms ease',

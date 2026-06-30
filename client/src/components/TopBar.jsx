@@ -68,7 +68,7 @@ export default function TopBar({
         }`}
         aria-label="Open option chain"
       >
-        OC
+        Option Chain
       </button>
 
       {/* Layout Mode Switcher */}

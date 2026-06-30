@@ -95,7 +95,9 @@ export default function DrawingTools({
 
   const handleClick = (tool) => {
     if (tool.id === 'eraser') {
-      if (hasDrawings) {
+      if (activeTool === 'eraser') {
+        onToolSelect?.('cursor')
+      } else {
         onToolSelect?.('eraser')
       }
       return
@@ -106,7 +108,8 @@ export default function DrawingTools({
       }
       return
     }
-    onToolSelect?.(tool.id)
+    // Toggle off if clicking the same drawing tool → back to cursor
+    onToolSelect?.(activeTool === tool.id && tool.id !== 'cursor' ? 'cursor' : tool.id)
   }
 
   return (
@@ -124,7 +127,7 @@ export default function DrawingTools({
 
           const isActive = activeTool === tool.id
           const isAction = tool.action
-          const isDisabled = isAction && !hasDrawings
+          const isDisabled = isAction && !hasDrawings && tool.id !== 'eraser'
 
           return (
             <div key={tool.id} className="relative group/tool">

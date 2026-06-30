@@ -146,7 +146,7 @@ export default function CandleSelector({ value, onChange }) {
           <div
             ref={listRef}
             className="overflow-y-auto"
-            style={{ scrollbarWidth: 'thin', scrollbarColor: '#3A3A3A transparent' }}
+            style={{ scrollbarWidth: 'thin', scrollbarColor: '#3A3A3A transparent', maxHeight: 'inherit' }}
           >
             {CANDLE_STYLES.map((group, gi) => (
               <div key={group.category}>

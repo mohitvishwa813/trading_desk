@@ -156,7 +156,7 @@ npm start
 - WebSocket: Connected to Upstox V3 feed (auto-reconnect every 5s on failure)
 - History: V2 API returns real candles from last trading day
 - Demo mode: Synthetic ticks generated at 1s interval with random walks
-- **Market closed** (Saturday) — real ticks will flow Monday when market opens
+- **Fixed LIVE mode data not updating charts** — root cause was `subscribedKeys.clear()` on mode switch to LIVE (server.js:753 removed). Now keys persist across mode toggles; frontend re-subscribes on `mode_change` WS event.
 - Token valid until June 2027
 - Volume panel removed — candle chart uses full height
 - Vertical price scale zoom via custom wheel handler (price scale only: scaleMargins, chart area: both axes)

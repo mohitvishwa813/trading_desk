@@ -163,8 +163,10 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
       positions,
       setPositions,
       onSendAlert,
+      prices,
+      tick,
     })
-  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert])
+  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick])
 
   const placeSellOrder = useCallback(() => {
     placeOrder({
@@ -182,8 +184,10 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
       positions,
       setPositions,
       onSendAlert,
+      prices,
+      tick,
     })
-  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert])
+  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick])
 
   const closePosition = useCallback((id) => {
     setPositions(prev => {
@@ -437,11 +441,22 @@ async function placeOrder({
   positions,
   setPositions,
   onSendAlert,
+  prices,
+  tick,
 }) {
   const qtyNum = parseInt(qty, 10)
   if (!qtyNum || qtyNum <= 0) {
     onSendAlert('INFO', `[${side}] Invalid quantity`)
     return
+  }
+
+  // Fallback price detection to ensure we never get 0 or NaN fill prices
+  let fillPrice = parseFloat(price) || 0
+  if (!fillPrice && prices && prices[activeSymbol]) {
+    fillPrice = parseFloat(prices[activeSymbol])
+  }
+  if (!fillPrice && tick && (tick.symbol === activeSymbol || tick.instrumentKey === activeSymbol)) {
+    fillPrice = parseFloat(tick.ltp)
   }
 
   if (tradingMode === 'paper') {
@@ -450,15 +465,15 @@ async function placeOrder({
       id: nextId(),
       symbol: activeSymbol,
       qty: side === 'BUY' ? qtyNum : -qtyNum,
-      avgPrice: parseFloat(price) || 0,
-      ltp: parseFloat(price) || 0,
+      avgPrice: fillPrice,
+      ltp: fillPrice,
       product,
       timestamp: new Date().toISOString(),
       stopLoss,
       target,
     }
     setPositions(prev => [...prev, pos])
-    const msg = `${side} ${qtyNum} ${activeSymbol} @ ${price} (Paper)`
+    const msg = `${side} ${qtyNum} ${activeSymbol} @ ₹${fillPrice.toFixed(2)} (Paper)`
     onSendAlert(side, msg)
     return
   }

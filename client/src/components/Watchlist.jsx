@@ -79,7 +79,11 @@ export default function Watchlist({ isOpen, onClose, items, onItemsChange, price
           </div>
         )}
         {items.map(sym => {
-          const price = prices[sym]
+          let resolvedSymbol = sym.toUpperCase().replace(/[\s_-]/g, '')
+          if (resolvedSymbol === 'NIFTY50') resolvedSymbol = 'NIFTY'
+          if (resolvedSymbol === 'STATEBANK' || resolvedSymbol === 'STATEBANKOFINDIA') resolvedSymbol = 'SBIN'
+
+          const price = prices[resolvedSymbol] || prices[sym]
           const change = price ? 0 : 0 // We'd need open prices for real change
           return (
             <div

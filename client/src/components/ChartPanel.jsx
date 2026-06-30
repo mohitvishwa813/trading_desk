@@ -389,6 +389,7 @@ export default function ChartPanel({
   replayIndex = 0,
   onReplayUpdate = () => {},
   onReplayEnd = () => {},
+  mode = 'live',
 }) {
   // --- State ----------------------------------
   const [tf, setTF] = useState('5m')
@@ -405,6 +406,52 @@ export default function ChartPanel({
   const drawingStateRef = useRef(drawingState)
   drawingStateRef.current = drawingState
   const [previewBump, setPreviewBump] = useState(0)
+  const [countdown, setCountdown] = useState('0:00')
+  const [isLive, setIsLive] = useState(false)
+  const lastTickTimeRef = useRef(0)
+  const [priceLabelY, setPriceLabelY] = useState(null)
+
+  // Candle countdown timer — based on current candle's open time + duration
+  useEffect(() => {
+    const update = () => {
+      const dur = TF_SECONDS[tfRef.current] || 60
+      const nowSec = Math.floor(Date.now() / 1000)
+      // Epoch-aligned candle start (works for all standard TF durations)
+      const candleStart = Math.floor(nowSec / dur) * dur
+      const candleEnd = candleStart + dur
+      const remain = Math.max(0, candleEnd - nowSec)
+
+      let formatted = ''
+      if (remain >= 86400) {
+        // Daily/weekly charts: remaining days & hours (e.g., "4d 18h")
+        const days = Math.floor(remain / 86400)
+        const hours = Math.floor((remain % 86400) / 3600)
+        formatted = `${days}d ${hours}h`
+      } else if (remain >= 3600) {
+        // Hourly charts: remaining hours, minutes, seconds (e.g., "1:24:05")
+        const hours = Math.floor(remain / 3600)
+        const mins = Math.floor((remain % 3600) / 60)
+        const secs = remain % 60
+        formatted = `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+      } else {
+        // Intraday charts (<1h): minutes and seconds (e.g., "4:32")
+        const mins = Math.floor(remain / 60)
+        const secs = remain % 60
+        formatted = `${mins}:${String(secs).padStart(2, '0')}`
+      }
+
+      setCountdown(formatted)
+    }
+    update()
+    // Sync to wall-clock seconds so the countdown ticks exactly on the second
+    const msToNextSec = 1000 - (Date.now() % 1000)
+    let id
+    const firstTick = setTimeout(() => {
+      update()
+      id = setInterval(update, 1000)
+    }, msToNextSec)
+    return () => { clearTimeout(firstTick); clearInterval(id) }
+  }, [tf])
 
   // --- Refs -----------------------------------
   const containerRef = useRef(null)
@@ -425,7 +472,7 @@ export default function ChartPanel({
   const fetchIdRef = useRef(0)
   const loadedDataRef = useRef([])
   const baseCandlesRef = useRef([])
-  const priceScaleMarginsRef = useRef({ top: 0.05, bottom: 0.05 })
+  const priceScaleMarginsRef = useRef({ top: 0.2, bottom: 0.2 })
   const svgRef = useRef(null)
   const mousePosRef = useRef(null)
   const dragStartRef = useRef(null) // { drawingId, startPoints, mouseX, mouseY }
@@ -435,6 +482,14 @@ export default function ChartPanel({
   drawingsRef.current = drawings
   const onDrawingsChangeRef = useRef(onDrawingsChange)
   onDrawingsChangeRef.current = onDrawingsChange
+
+  // Stable refs so effects/callbacks always read latest value without recreating
+  const tfRef = useRef(tf)
+  tfRef.current = tf
+  const chartStyleRef = useRef(chartStyle)
+  chartStyleRef.current = chartStyle
+  const modeRef = useRef(mode)
+  modeRef.current = mode
 
   // --- Persist style --------------------------
   useEffect(() => { localStorage.setItem('chartStyle', chartStyle) }, [chartStyle])
@@ -461,6 +516,7 @@ export default function ChartPanel({
     }
   }, [])
 
+
   // --- Helper: update active series -----------
   const updateActiveSeries = useCallback((data, style) => {
     const candleVis = isCandleSeries(style)
@@ -470,6 +526,18 @@ export default function ChartPanel({
     const baseVis = isBaselineSeries(style)
     const colVis = isColumnSeries(style)
     const hlVis = isHighLowSeries(style)
+
+    // Clear data of all series that are NOT active to prevent scale distortion
+    if (!candleVis) candleSeriesRef.current?.setData([])
+    if (!barVis) barSeriesRef.current?.setData([])
+    if (!lineVis) lineSeriesRef.current?.setData([])
+    if (!areaVis) areaSeriesRef.current?.setData([])
+    if (!baseVis) baselineSeriesRef.current?.setData([])
+    if (!colVis) histogramSeriesRef.current?.setData([])
+    if (!hlVis) {
+      highLineRef.current?.setData([])
+      lowLineRef.current?.setData([])
+    }
 
     candleSeriesRef.current?.applyOptions({ visible: candleVis })
     barSeriesRef.current?.applyOptions({ visible: barVis })
@@ -495,7 +563,7 @@ export default function ChartPanel({
 
   // --- Helper: refresh chart with new data ---
   const refreshChart = useCallback((candles, style) => {
-    const tfSec = TF_SECONDS[tf] || 60
+    const tfSec = TF_SECONDS[tfRef.current] || 60  // use ref — no dep on tf
     const aggregated = aggregateCandles(candles, tfSec)
     loadedDataRef.current = aggregated
     setDataVersion(v => v + 1)
@@ -503,8 +571,10 @@ export default function ChartPanel({
     const transformed = transformData(aggregated, style)
     updateActiveSeries(transformed, style)
 
+    // Reset price scale auto-scale so new symbol fits perfectly!
+    chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
     chartRef.current?.timeScale().fitContent()
-  }, [tf, updateActiveSeries])
+  }, [updateActiveSeries])  // stable — tf read via tfRef
 
   // --- Initialize charts --------------------
   useEffect(() => {
@@ -515,16 +585,16 @@ export default function ChartPanel({
       layout: { background: { color: '#0d0f14' }, textColor: '#e2e8f0', attributionLogo: false },
       grid: { vertLines: { color: '#1e2330' }, horzLines: { color: '#1e2330' } },
       crosshair: { mode: 0 },
-      rightPriceScale: { borderColor: '#252a36' },
-      timeScale: { borderColor: '#252a36', timeVisible: true, secondsVisible: false, visible: false },
+      rightPriceScale: { borderColor: '#252a36', scaleMargins: { top: 0.2, bottom: 0.2 } },
+      timeScale: { borderColor: '#252a36', timeVisible: true, secondsVisible: false, visible: true },
       handleScroll: {
-        mouseWheel: false,
+        mouseWheel: true,
         pressedMouseMove: true,
         horzTouchDrag: true,
-        vertTouchDrag: false,
+        vertTouchDrag: true,
       },
       handleScale: {
-        mouseWheel: false,
+        mouseWheel: true,
         pinch: true,
       },
       width: mainChartContainerRef.current.offsetWidth || 600,
@@ -573,20 +643,21 @@ export default function ChartPanel({
       const isOverPriceScale = mouseX > containerWidth - priceScaleWidth
 
       const direction = -Math.sign(e.deltaY)
-      const priceFactor = 0.03 * direction
-      const margins = priceScaleMarginsRef.current
 
-      const newTop = Math.max(0.01, Math.min(0.49, margins.top - priceFactor))
-      const newBottom = Math.max(0.01, Math.min(0.49, margins.bottom - priceFactor))
-      priceScaleMarginsRef.current = { top: newTop, bottom: newBottom }
+      if (isOverPriceScale) {
+        const zoomFactor = 0.04 * direction
+        const margins = priceScaleMarginsRef.current
 
-      chart.applyOptions({
-        rightPriceScale: {
-          scaleMargins: { top: newTop, bottom: newBottom },
-        },
-      })
+        const newTop = Math.max(0.01, Math.min(0.49, margins.top - zoomFactor))
+        const newBottom = Math.max(0.01, Math.min(0.49, margins.bottom + zoomFactor))
+        priceScaleMarginsRef.current = { top: newTop, bottom: newBottom }
 
-      if (!isOverPriceScale) {
+        chart.applyOptions({
+          rightPriceScale: {
+            scaleMargins: { top: newTop, bottom: newBottom },
+          },
+        })
+      } else {
         const timeScale = chart.timeScale()
         const logicalRange = timeScale.getVisibleLogicalRange()
         if (logicalRange) {
@@ -652,14 +723,16 @@ export default function ChartPanel({
     const chart = chartRef.current
     if (!container || !chart) return
 
+    let dragStartCoords = null;
+
     const ONE_CLICK_TOOLS = ['horizontal_line', 'horizontal_ray', 'vertical_line', 'text_label']
     const TWO_CLICK_TOOLS = ['trend_line', 'rectangle', 'fibonacci']
     const DRAWING_TOOLS = [...ONE_CLICK_TOOLS, ...TWO_CLICK_TOOLS]
 
     const getCoords = (clientX, clientY) => {
-      const rect = container.getBoundingClientRect()
-      const x = clientX - rect.left
-      const y = clientY - rect.top
+      const chartRect = mainChartContainerRef.current.getBoundingClientRect()
+      const x = clientX - chartRect.left
+      const y = clientY - chartRect.top
       const time = chart.timeScale().coordinateToTime(x)
       const series = activeSeriesRef.current
       const price = series?.coordinateToPrice(y)
@@ -725,6 +798,7 @@ export default function ChartPanel({
         } else {
           // Clicking empty space with cursor -> deselect
           setDrawingState(prev => ({ ...prev, selectedId: null }))
+          dragStartCoords = { x: e.clientX, y: e.clientY }
           // Let the chart handle pan/zoom
           return
         }
@@ -778,11 +852,21 @@ export default function ChartPanel({
 
     const onMouseMove = (e) => {
       const tool = curTool()
-      const rect = container.getBoundingClientRect()
-      const mx = e.clientX - rect.left
-      const my = e.clientY - rect.top
+      const chartRect = mainChartContainerRef.current.getBoundingClientRect()
+      const mx = e.clientX - chartRect.left
+      const my = e.clientY - chartRect.top
       mousePosRef.current = { x: mx, y: my }
       const currentDrawings = curDrawings()
+
+      // If user drags the chart vertically, turn off price scale autoScale so it pans freely!
+      if (dragStartCoords) {
+        const dy = Math.abs(e.clientY - dragStartCoords.y)
+        const dx = Math.abs(e.clientX - dragStartCoords.x)
+        if (dy > 4 && dy > dx) {
+          chart.priceScale('right').applyOptions({ autoScale: false })
+          dragStartCoords = null
+        }
+      }
 
       // Update hovered drawing for cursor feedback
       const series = activeSeriesRef.current
@@ -829,6 +913,7 @@ export default function ChartPanel({
     }
 
     const onMouseUp = () => {
+      dragStartCoords = null
       if (dragStartRef.current) {
         dragStartRef.current = null
         setDrawingState(prev => ({ ...prev, mode: 'idle' }))
@@ -854,22 +939,76 @@ export default function ChartPanel({
     }
   }, [])
 
-  // --- Fetch history ------------------------
+  // --- Reset drawing state on tool change ---
   useEffect(() => {
-    const id = ++fetchIdRef.current
+    setDrawingState({ mode: 'idle', pendingPoint: null, selectedId: null, hoveredId: null })
+  }, [activeDrawingTool])
+
+  // --- Clear candle buffer when mode changes (prevent DEMO/LIVE data mix) ---
+  useEffect(() => {
     candleBufferRef.current = {}
+  }, [mode])
+
+  // --- Track live data status (LIVE badge) ---
+  useEffect(() => {
+    if (!tick) return
+    const tickKey = tick.instrumentKey || tick.symbol
+    const chartKey = instrumentKey || activeSymbol
+    if (tickKey !== chartKey) return
+    lastTickTimeRef.current = Date.now()
+    setIsLive(true)
+  }, [tick, activeSymbol, instrumentKey])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (lastTickTimeRef.current && Date.now() - lastTickTimeRef.current > 5000) {
+        setIsLive(false)
+      }
+    }, 2000)
+    return () => clearInterval(id)
+  }, [])
+
+  // --- Track Y coordinate of live price for countdown label positioning ---
+  useEffect(() => {
+    if (!tick?.ltp) return
+    try {
+      const series = activeSeriesRef.current
+      const y = series?.priceToCoordinate?.(tick.ltp)
+      if (y != null && Number.isFinite(y)) setPriceLabelY(y)
+    } catch {}
+  }, [tick])
+
+  // --- Fetch history (runs on symbol or timeframe change) ---
+  useEffect(() => {
+    if (!activeSymbol) { setLoading(false); return }
+    const id = ++fetchIdRef.current
+    // Clear stale state before new fetch
+    candleBufferRef.current = {}
+    baseCandlesRef.current = []
+    loadedDataRef.current = []
+    
+    // Wipe series to prevent transient timeline update clashes
+    candleSeriesRef.current?.setData([])
+    barSeriesRef.current?.setData([])
+    lineSeriesRef.current?.setData([])
+    areaSeriesRef.current?.setData([])
+    baselineSeriesRef.current?.setData([])
+    histogramSeriesRef.current?.setData([])
+    highLineRef.current?.setData([])
+    lowLineRef.current?.setData([])
+
     setLoading(true)
-    const symbol = activeSymbol
 
     ;(async () => {
       try {
-        const res = await fetch(`/api/history/${encodeURIComponent(symbol)}`)
+        const res = await fetch(`/api/history/${encodeURIComponent(activeSymbol)}?tf=${tf}`)
         const { candles } = await res.json()
         if (id !== fetchIdRef.current) return
 
         if (candles?.length) {
           baseCandlesRef.current = candles
-          refreshChart(candles, chartStyle)
+          // Use chartStyleRef to avoid stale closure
+          refreshChart(candles, chartStyleRef.current)
         }
       } catch {
         // silently fail
@@ -877,38 +1016,57 @@ export default function ChartPanel({
         if (id === fetchIdRef.current) setLoading(false)
       }
     })()
-  }, [activeSymbol, chartStyle, tf, refreshChart])
+  }, [activeSymbol, tf, refreshChart])  // refreshChart is stable (no tf/style dep)
 
-  // --- Style change -> refresh ---------------
+
+  // --- Style change -> re-transform already-aggregated data (no fetch, no re-aggregate) ---
   useEffect(() => {
-    if (loadedDataRef.current.length) {
-      refreshChart(loadedDataRef.current, chartStyle)
-    }
-  }, [chartStyle, refreshChart])
+    if (!loadedDataRef.current.length) return
+    const transformed = transformData(loadedDataRef.current, chartStyle)
+    updateActiveSeries(transformed, chartStyle)
+  }, [chartStyle, updateActiveSeries])
 
   // --- Real-time tick -----------------------
   useEffect(() => {
-    if (!tick || tick.symbol !== activeSymbol) return
+    if (!tick) return
+    if (!loadedDataRef.current || loadedDataRef.current.length === 0) return
+
+    // Match tick to this chart by instrumentKey first, fall back to symbol
+    const tickKey = tick.instrumentKey || tick.symbol
+    const chartKey = instrumentKey || activeSymbol
+    if (tickKey !== chartKey) return
+
     if (replayMode) return // pause during replay
 
+    // Guard: reject ticks from the wrong mode (prevents DEMO candles on LIVE chart)
+    if (tick.mode && tick.mode.toLowerCase() !== modeRef.current.toLowerCase()) return
+
     const tfSec = TF_SECONDS[tf] || 300
-    const nowSec = tick.timestamp || Math.floor(Date.now() / 1000)
+    const nowSec = Math.floor((tick.timestamp || Date.now()) / 1000)
     const candleTime = Math.floor(nowSec / tfSec) * tfSec
 
+    // Use instrumentKey as buffer key (unique across symbols)
+    const bufKey = instrumentKey || activeSymbol
     const buf = candleBufferRef.current
-    if (!buf[tick.symbol] || buf[tick.symbol].time !== candleTime) {
-      buf[tick.symbol] = {
+    if (!buf[bufKey] || buf[bufKey].time !== candleTime) {
+      buf[bufKey] = {
         time: candleTime, open: tick.ltp, high: tick.ltp, low: tick.ltp, close: tick.ltp,
       }
     } else {
-      const c = buf[tick.symbol]
+      const c = buf[bufKey]
       c.high = Math.max(c.high, tick.ltp)
       c.low = Math.min(c.low, tick.ltp)
       c.close = tick.ltp
     }
 
-    const candle = buf[tick.symbol]
+    const candle = buf[bufKey]
     const style = chartStyle
+
+    const lastCandle = loadedDataRef.current?.[loadedDataRef.current.length - 1]
+    const lastCandleTime = lastCandle ? lastCandle.time : 0
+    if (candle.time < lastCandleTime) {
+      return
+    }
 
     if (isCandleSeries(style)) {
       candleSeriesRef.current?.update(candle)
@@ -929,7 +1087,7 @@ export default function ChartPanel({
       highLineRef.current?.update({ time: candle.time, value: candle.high })
       lowLineRef.current?.update({ time: candle.time, value: candle.low })
     }
-  }, [tick, activeSymbol, tf, chartStyle, replayMode])
+  }, [tick, activeSymbol, instrumentKey, tf, chartStyle, replayMode, mode])
 
   // --- Replay mode --------------------------
   useEffect(() => {
@@ -1094,7 +1252,12 @@ export default function ChartPanel({
   // --- Handlers ------------------------------
   const resetChart = useCallback(() => {
     if (chartRef.current) {
+      chartRef.current.priceScale('right').applyOptions({ autoScale: true })
       chartRef.current.timeScale().fitContent()
+      chartRef.current.applyOptions({
+        rightPriceScale: { scaleMargins: { top: 0.2, bottom: 0.2 } },
+      })
+      priceScaleMarginsRef.current = { top: 0.2, bottom: 0.2 }
     }
     setCtxMenu(prev => ({ ...prev, show: false }))
   }, [])
@@ -1169,7 +1332,7 @@ export default function ChartPanel({
     return drawings.map(d => renderDrawingElement(d, chart, series, cw, ch, selId, hovId))
   }, [drawings, visibleRange, chartStyle, drawingState.selectedId, drawingState.hoveredId])
 
-  // --- Preview line for two-click drawings ---
+  // --- Preview for two-click drawings ---
   const previewElements = useMemo(() => {
     if (!chartRef.current || drawingState.mode !== 'placing' || !drawingState.pendingPoint || !mousePosRef.current) return null
     const chart = chartRef.current
@@ -1181,13 +1344,25 @@ export default function ChartPanel({
     const p2x = mousePosRef.current.x
     const p2y = mousePosRef.current.y
     if (p1x == null || p1y == null) return null
+    if (activeDrawingTool === 'rectangle') {
+      const x = Math.min(p1x, p2x)
+      const y = Math.min(p1y, p2y)
+      const w = Math.abs(p2x - p1x)
+      const h = Math.abs(p2y - p1y)
+      return (
+        <rect
+          x={x} y={y} width={w} height={h}
+          stroke="#4f9cf9" strokeWidth={1} strokeDasharray="4 3" fill="none" opacity={0.6}
+        />
+      )
+    }
     return (
       <line
         x1={p1x} y1={p1y} x2={p2x} y2={p2y}
         stroke="#4f9cf9" strokeWidth={1} strokeDasharray="4 3" opacity={0.6}
       />
     )
-  }, [drawingState.mode, drawingState.pendingPoint, visibleRange, previewBump])
+  }, [drawingState.mode, drawingState.pendingPoint, visibleRange, previewBump, activeDrawingTool])
 
   // --- JSX -----------------------------------
   return (
@@ -1296,14 +1471,87 @@ export default function ChartPanel({
           </div>
         )}
 
+        {/* Symbol info strip */}
+        {activeSymbol && (
+          <div className="absolute top-2 left-14 z-20 pointer-events-none">
+            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[#131722]/90 border border-[#2a2e39] shadow-lg">
+              <span className="text-sm font-bold text-white tracking-wide">{activeSymbol}</span>
+              {tick && (
+                <>
+                  <div className="w-px h-4 bg-[#2a2e39]" />
+                  <span className="text-sm font-bold text-white font-mono tabular-nums">{tick.ltp?.toFixed(2)}</span>
+                  <div className="w-px h-4 bg-[#2a2e39]" />
+                  {tick.close != null && (() => {
+                    const chg = tick.ltp - tick.close
+                    const pct = (chg / tick.close) * 100
+                    const color = chg >= 0 ? 'text-green' : 'text-red'
+                    return (
+                      <span className={`text-[11px] font-semibold font-mono tabular-nums ${color}`}>
+                        {chg >= 0 ? '+' : ''}{chg.toFixed(2)}
+                        {' '}
+                        <span className="opacity-80">({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
+                      </span>
+                    )
+                  })()}
+                </>
+              )}
+              {/* Candle countdown timer — always visible */}
+              <div className="w-px h-4 bg-[#2a2e39]" />
+              <div className="flex items-center gap-1">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-green/70 shrink-0">
+                  <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                </svg>
+                <span className={`text-[11px] font-mono font-bold tabular-nums ${
+                  countdown.startsWith('0:0') ? 'text-yellow' : 'text-green'
+                }`}>{countdown}</span>
+              </div>
+              {/* LIVE / HIST — embedded in strip */}
+              <div className="w-px h-4 bg-[#2a2e39]" />
+              <div className={`flex items-center gap-1 text-[10px] font-bold tracking-widest ${
+                isLive ? 'text-green' : 'text-[#4a5068]'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  isLive ? 'bg-green animate-pulse' : 'bg-[#3a3f52]'
+                }`} />
+                {isLive ? 'LIVE' : 'HIST'}
+              </div>
+            </div>
+          </div>
+        )}
+
+
         {/* Drawing mode hint */}
         {activeDrawingTool !== 'cursor' && (
-          <div className="absolute top-1 left-12 z-20 pointer-events-none">
+          <div className="absolute top-7 left-12 z-20 pointer-events-none">
             <span className="text-[10px] px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
               {drawingState.mode === 'placing'
                 ? `Place second point (Esc to cancel)`
                 : `Draw: ${activeDrawingTool.replace(/_/g, ' ')} (Esc to exit)`}
             </span>
+          </div>
+        )}
+
+        {/* ── TradingView-style candle countdown label (right price axis) ── */}
+        {activeSymbol && (
+          <div
+            className="absolute z-20 pointer-events-none select-none"
+            style={{
+              left: '40px',
+              right: 0,
+              // Track Y of live price; fallback to 40% from top when historical
+              top: priceLabelY != null
+                ? Math.max(4, Math.min(priceLabelY + 22, 10000))
+                : undefined,
+              bottom: priceLabelY == null ? '40%' : undefined,
+            }}
+          >
+            <div className="flex justify-end items-center pr-[2px]">
+              <div className={`inline-flex items-center justify-center px-2 py-[3px] rounded text-[11px] font-mono font-bold text-white min-w-[46px] shadow ${
+                countdown.startsWith('0:0') ? 'bg-[#c9820a]' : 'bg-[#4f9cf9]'
+              }`}>
+                {countdown}
+              </div>
+            </div>
           </div>
         )}
 
@@ -1347,6 +1595,9 @@ export default function ChartPanel({
         </span>
         <span className="text-[11px] text-muted/60 font-mono whitespace-nowrap">
           {tf}
+        </span>
+        <span className="text-[11px] text-green font-mono whitespace-nowrap">
+          {countdown}
         </span>
         {rangeText && (
           <span className="text-[11px] text-muted font-mono ml-auto whitespace-nowrap">
