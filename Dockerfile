@@ -1,32 +1,23 @@
-# Stage 1: Build the React client
-FROM node:18-alpine AS client-builder
-WORKDIR /app/client
-COPY client/package*.json ./
-RUN npm ci
-COPY client/ ./
-RUN npm run build
-
-# Stage 2: Run the production Node.js server
+# Use a lightweight Node image
 FROM node:18-alpine
 WORKDIR /app
 
-# Copy root package files and install production dependencies
+# Copy package configuration files
 COPY package*.json ./
+
+# Install production dependencies
 RUN npm ci --only=production
 
-# Copy server files
+# Copy server-specific files
 COPY server.js ./
 COPY MarketDataFeed.proto ./
 
-# Copy built React client assets from Stage 1
-COPY --from=client-builder /app/client/dist ./client/dist
-
-# Expose server port
+# Expose the backend port (3000)
 EXPOSE 3000
 
-# Set production environment defaults
+# Set environment variables for production
 ENV PORT=3000
 ENV NODE_ENV=production
 
-# Run the backend server
+# Start the Node.js server
 CMD ["node", "server.js"]
