@@ -164,15 +164,23 @@ export default function OptionChain({
 
   const enrichedChain = useMemo(() => {
     return chainData.map(row => {
-      const ceTick = row.ce ? tickCache[row.ce.tradingsymbol] : null
-      const peTick = row.pe ? tickCache[row.pe.tradingsymbol] : null
+      const ceTick = row.ce ? (tickCache[row.ce.instrument_key] || tickCache[row.ce.tradingsymbol]) : null
+      const peTick = row.pe ? (tickCache[row.pe.instrument_key] || tickCache[row.pe.tradingsymbol]) : null
       const ce = row.ce ? {
-        ...row.ce, ltp: ceTick?.ltp ?? row.ce.ltp, oi: ceTick?.oi, iv: ceTick?.iv,
-        volume: ceTick?.volume, greeks: ceTick?.greeks,
+        ...row.ce,
+        ltp: ceTick?.ltp ?? row.ce.ltp,
+        oi: ceTick?.oi ?? row.ce.oi,
+        iv: ceTick?.iv ?? row.ce.iv,
+        volume: ceTick?.volume ?? row.ce.volume,
+        greeks: ceTick?.greeks ?? row.ce.greeks,
       } : null
       const pe = row.pe ? {
-        ...row.pe, ltp: peTick?.ltp ?? row.pe.ltp, oi: peTick?.oi, iv: peTick?.iv,
-        volume: peTick?.volume, greeks: peTick?.greeks,
+        ...row.pe,
+        ltp: peTick?.ltp ?? row.pe.ltp,
+        oi: peTick?.oi ?? row.pe.oi,
+        iv: peTick?.iv ?? row.pe.iv,
+        volume: peTick?.volume ?? row.pe.volume,
+        greeks: peTick?.greeks ?? row.pe.greeks,
       } : null
       return { ...row, ce, pe }
     })

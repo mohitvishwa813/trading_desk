@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import CandleSelector from './CandleSelector'
 
 export default function TopBar({
   wsConnected,
@@ -20,6 +21,9 @@ export default function TopBar({
   // Option Chain
   hasOptions = false,
   onOpenOptionChain = () => {},
+  // Style (Stitched next to Option Chain)
+  chartStyle,
+  onChartStyleChange,
 }) {
   const [time, setTime] = useState(new Date().toLocaleTimeString())
   useEffect(() => {
@@ -70,6 +74,13 @@ export default function TopBar({
       >
         Option Chain
       </button>
+
+      {/* Candle Style Selector */}
+      {activeSymbol && chartStyle && (
+        <div className="flex items-center bg-[#0d0f14]/80 border border-[#2a2e39] rounded h-[28px] px-1.5 shrink-0 select-none ml-1">
+          <CandleSelector value={chartStyle} onChange={onChartStyleChange} />
+        </div>
+      )}
 
       {/* Layout Mode Switcher */}
       <div className="flex gap-0.5 border border-border rounded ml-1">

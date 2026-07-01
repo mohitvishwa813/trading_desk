@@ -117,7 +117,36 @@ export default function App() {
     }
   })
 
-  // Subscribe whenever a chart or watchlist changes, or WebSocket connects
+  // ── Ticker Items (max 6) ──
+  const [tickerItems, setTickerItems] = useState(() => {
+    try {
+      const saved = localStorage.getItem('tickerItems_v4')
+      if (saved) {
+        return JSON.parse(saved)
+      }
+    } catch {}
+    return [{ symbol: 'NIFTY', key: 'NSE_INDEX|Nifty 50' }]
+  })
+
+  useEffect(() => {
+    localStorage.setItem('tickerItems_v4', JSON.stringify(tickerItems))
+  }, [tickerItems])
+
+  // ── Styles (lifted from ChartPanel to control globally in header) ──
+  const [chartStyles, setChartStyles] = useState(() => {
+    try {
+      const saved = localStorage.getItem('chartStyles')
+      return saved ? JSON.parse(saved) : ['candles', 'candles', 'candles', 'candles']
+    } catch {
+      return ['candles', 'candles', 'candles', 'candles']
+    }
+  })
+
+  useEffect(() => {
+    localStorage.setItem('chartStyles', JSON.stringify(chartStyles))
+  }, [chartStyles])
+
+  // Subscribe whenever a chart, watchlist, or ticker changes, or WebSocket connects
   useEffect(() => {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN || !wsConnected) return
@@ -142,10 +171,19 @@ export default function App() {
       if (key) keysToSub.add(key)
     }
 
+    // 3. Ticker keys
+    for (const item of tickerItems) {
+      const sym = typeof item === 'string' ? item : item.symbol
+      const key = typeof item === 'string'
+        ? (getInstrumentKey(sym.toUpperCase().replace(/[\s_-]/g, '')) || getInstrumentKey(sym))
+        : item.key
+      if (key) keysToSub.add(key)
+    }
+
     if (keysToSub.size > 0) {
       ws.send(JSON.stringify({ type: 'subscribe_all', keys: Array.from(keysToSub) }))
     }
-  }, [chartConfigs, watchlistItems, getInstrumentKey, wsConnected])
+  }, [chartConfigs, watchlistItems, tickerItems, getInstrumentKey, wsConnected])
 
   // ── Indicators per chart ──
   const [chartIndicators, setChartIndicators] = useState({})
@@ -446,6 +484,13 @@ export default function App() {
           onReplayEnd={() =>
             setChartReplay(prev => ({ ...prev, [i]: undefined }))
           }
+          chartStyle={chartStyles[i]}
+          onChartStyleChange={(styleVal) => setChartStyles(prev => { const next = [...prev]; next[i] = styleVal; return next })}
+          // Ticker Strip props
+          tickerItems={tickerItems}
+          prices={prices}
+          openPrices={openPrices}
+          onTickerItemsChange={setTickerItems}
         />
       )
     }
@@ -550,20 +595,10 @@ export default function App() {
         // Option Chain
         hasOptions={hasOptions}
         onOpenOptionChain={() => setOptionChainOpen(true)}
+        // Style (Stitched next to Option Chain)
+        chartStyle={chartStyles[focusedChart]}
+        onChartStyleChange={(styleVal) => setChartStyles(prev => { const next = [...prev]; next[focusedChart] = styleVal; return next })}
       />
-
-      {/* Ticker Strip */}
-      {prices && Object.keys(prices).length > 0 && watchlistItems.length > 0 && (
-        <TickerStrip
-          instruments={watchlistItems}
-          prices={prices}
-          openPrices={openPrices}
-          activeSymbol={activeSymbol}
-          onSelect={(sym) => {
-            selectSymbol(sym)
-          }}
-        />
-      )}
 
       {/* Main content area */}
       <div className="flex flex-1 overflow-hidden">

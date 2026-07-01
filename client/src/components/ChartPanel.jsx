@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createChart } from 'lightweight-charts'
 import CandleSelector from './CandleSelector'
+import TickerStrip from './TickerStrip'
 import DrawingTools from './DrawingTools'
 import {
   sma, ema, vwap, atr, supertrend, rsi, macd,
@@ -406,10 +407,16 @@ export default function ChartPanel({
   onReplayUpdate = () => {},
   onReplayEnd = () => {},
   mode = 'live',
+  chartStyle = 'candles',
+  onChartStyleChange = () => {},
+  // Ticker Strip props (rendered locally next to timeframes)
+  tickerItems = [],
+  prices = {},
+  openPrices = {},
+  onTickerItemsChange = () => {},
 }) {
   // --- State ----------------------------------
   const [tf, setTF] = useState('5m')
-  const [chartStyle, setChartStyle] = useState(() => localStorage.getItem('chartStyle') || 'candles')
   const [loading, setLoading] = useState(false)
   const [visibleRange, setVisibleRange] = useState(null)
   const [ctxMenu, setCtxMenu] = useState({ show: false, x: 0, y: 0 })
@@ -1326,8 +1333,8 @@ export default function ChartPanel({
 
 
   const handleCandleStyle = useCallback((styleId) => {
-    setChartStyle(styleId)
-  }, [])
+    onChartStyleChange(styleId)
+  }, [onChartStyleChange])
 
   const handleTFChange = useCallback((t) => {
     setTF(t)
@@ -1406,14 +1413,14 @@ export default function ChartPanel({
       className={`flex-1 flex flex-col overflow-hidden ${focusedClass}`}
       onClick={onFocus}
     >
-      {/* -- Toolbar --------------------------- */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border-b border-border shrink-0 overflow-x-auto">
+      {/* -- Toolbar (Timeframe, TickerStrip) --------------------------- */}
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border-b border-border shrink-0 overflow-x-auto select-none">
         {TIMEFRAMES.map(t => (
           <button
             key={t}
             className={`px-2 py-0.5 rounded text-[11px] border transition-colors whitespace-nowrap ${
               tf === t
-                ? 'bg-accent border-accent text-white'
+                ? 'bg-accent border-accent text-white font-bold'
                 : 'bg-transparent border-border text-muted hover:border-accent'
             }`}
             onClick={() => handleTFChange(t)}
@@ -1421,8 +1428,21 @@ export default function ChartPanel({
             {t}
           </button>
         ))}
-        <div className="w-px h-4 bg-border shrink-0" />
-        <CandleSelector value={chartStyle} onChange={handleCandleStyle} />
+
+        {prices && Object.keys(prices).length > 0 && tickerItems && tickerItems.length > 0 && (
+          <>
+            <div className="w-px h-4 bg-border shrink-0 mx-1" />
+            <TickerStrip
+              instruments={tickerItems}
+              prices={prices}
+              openPrices={openPrices}
+              activeSymbol={activeSymbol}
+              onSelect={(sym, key) => onSymbolChange(sym, key)}
+              onItemsChange={onTickerItemsChange}
+            />
+          </>
+        )}
+
         <div className="ml-auto flex gap-1" />
       </div>
 
