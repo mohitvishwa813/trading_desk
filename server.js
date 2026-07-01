@@ -6,10 +6,15 @@ const path = require('path');
 const protobuf = require('protobufjs');
 const https = require('https');
 const { createGunzip } = require('zlib');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'client', 'dist')));
+
+const distPath = path.join(__dirname, 'client', 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+}
 
 const PORT = process.env.PORT || 3000;
 const ACCESS_TOKEN = process.env.UPSTOX_ACCESS_TOKEN;
@@ -47,7 +52,10 @@ const FeedResponse = protoRoot.lookupType('FeedResponse');
 
 // ─── JSON Download & Indexing ──────────────────────────────────────────────────
 
-const INSTRUMENT_JSON_URL = 'https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz';
+const INSTRUMENT_URLS = [
+  'https://assets.upstox.com/market-quote/instruments/exchange/MCX.json.gz',
+  'https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz'
+];
 
 function downloadGzippedJSON(url) {
   return new Promise((resolve, reject) => {
@@ -112,7 +120,10 @@ function indexInstruments(records) {
 
 // Binance WebSocket Client for BTC/USDT live ticks
 let binanceWS = null;
+let binanceBlocked = false;
+
 function connectBinance() {
+  if (binanceBlocked) return;
   console.log('🔌 Connecting to Binance WebSocket for BTCUSDT...');
   try {
     binanceWS = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_1m');
@@ -147,27 +158,38 @@ function connectBinance() {
     });
 
     binanceWS.on('close', () => {
+      if (binanceBlocked) return;
       console.log('🔄 Binance WS closed — reconnecting in 5s...');
       setTimeout(connectBinance, 5000);
     });
 
     binanceWS.on('error', (err) => {
       console.error('Binance WS error:', err.message);
+      if (err.message && err.message.includes('451')) {
+        console.warn('⚠️ Binance is restricted in this region (HTTP 451). Disabling auto-reconnect.');
+        binanceBlocked = true;
+      }
     });
   } catch (err) {
     console.error('Binance WS initialization failed:', err.message);
-    setTimeout(connectBinance, 5000);
+    if (err.message && err.message.includes('451')) {
+      binanceBlocked = true;
+    } else {
+      setTimeout(connectBinance, 5000);
+    }
   }
 }
 
 async function loadInstruments() {
-  try {
-    console.log(`📥 Downloading instruments JSON...`);
-    const records = await downloadGzippedJSON(INSTRUMENT_JSON_URL);
-    const count = indexInstruments(records);
-    console.log(`   ✓ ${count} instruments indexed from JSON`);
-  } catch (err) {
-    console.warn(`⚠️  Failed to download/parse instruments JSON: ${err.message}`);
+  for (const url of INSTRUMENT_URLS) {
+    try {
+      console.log(`📥 Downloading instruments from ${url.split('/').pop()}...`);
+      const records = await downloadGzippedJSON(url);
+      const count = indexInstruments(records);
+      console.log(`   ✓ ${count} instruments indexed`);
+    } catch (err) {
+      console.warn(`⚠️  Failed to download/parse ${url}: ${err.message}`);
+    }
   }
 
   // Inject BTCUSD as a custom instrument
@@ -993,7 +1015,12 @@ app.get('/api/debug', (req, res) => {
 
 // SPA catch-all: serve React index.html for any non-API route
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'client', 'dist', 'index.html'));
+  const indexHtmlPath = path.join(__dirname, 'client', 'dist', 'index.html');
+  if (fs.existsSync(indexHtmlPath)) {
+    res.sendFile(indexHtmlPath);
+  } else {
+    res.status(200).json({ status: 'running', message: 'Trade Desk Backend API' });
+  }
 });
 
 // ─── HTTP + WS Server ────────────────────────────────────────────────────────
