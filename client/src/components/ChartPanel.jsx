@@ -19,26 +19,44 @@ const MIN_PANEL_HEIGHT = 28
 const MAX_PANEL_HEIGHT = 150
 
 // --- Helper functions ----------------------
-function aggregateCandles(candles, tfSec) {
+function getMarketOpenOffset(symbol, instrumentKey) {
+  const sym = (symbol || '').toUpperCase()
+  const key = (instrumentKey || '').toUpperCase()
+  // Crypto (24/7) -> aligns to midnight 00:00
+  if (key.includes('BINANCE') || sym === 'BTCUSD') {
+    return 0
+  }
+  // MCX Commodities, NCDEX, and Currency (CDS) -> opens at 09:00 AM
+  if (
+    key.includes('MCX') ||
+    key.includes('NCD') ||
+    key.includes('CDS') ||
+    key.includes('_CD') ||
+    sym.includes('CRUDE')
+  ) {
+    return 9 * 3600 // 9:00 AM (32400 seconds)
+  }
+  // Standard Indian Equity/Index (NSE/BSE) -> opens at 09:15 AM
+  return 9 * 3600 + 15 * 60 // 9:15 AM (33300 seconds)
+}
+
+function aggregateCandles(candles, tfSec, symbol = '', instrumentKey = '') {
   if (tfSec === 60) return candles
   const result = []
   let current = null
+  const marketOpen = getMarketOpenOffset(symbol, instrumentKey)
   for (const c of candles) {
     let bucket
     if (tfSec < 86400) {
-      // Align to Indian Market Open (09:15 AM local time)
       const date = new Date(c.time * 1000)
-      date.setHours(0, 0, 0, 0)
-      const midnight = Math.floor(date.getTime() / 1000)
+      const midnight = Math.floor(date.setUTCHours(0, 0, 0, 0) / 1000)
       const elapsed = c.time - midnight
-      const marketOpen = 9 * 3600 + 15 * 60 // 33300 seconds
       const bucketElapsed = marketOpen + Math.floor((elapsed - marketOpen) / tfSec) * tfSec
       bucket = midnight + bucketElapsed
     } else {
-      // Daily/Weekly/Monthly: align to midnight local time
+      // Daily/Weekly/Monthly: align to midnight UTC
       const date = new Date(c.time * 1000)
-      date.setHours(0, 0, 0, 0)
-      bucket = Math.floor(date.getTime() / 1000)
+      bucket = Math.floor(date.setUTCHours(0, 0, 0, 0) / 1000)
     }
 
     if (!current || current.time !== bucket) {
@@ -587,9 +605,16 @@ export default function ChartPanel({
   // --- Helper: refresh chart with new data ---
   const refreshChart = useCallback((candles, style) => {
     const tfSec = TF_SECONDS[tfRef.current] || 60  // use ref — no dep on tf
-    const aggregated = aggregateCandles(candles, tfSec)
+    const aggregated = aggregateCandles(candles, tfSec, activeSymbol, instrumentKey)
     loadedDataRef.current = aggregated
     setDataVersion(v => v + 1)
+
+    // Initialize candle buffer for real-time ticks using the last aggregated candle
+    if (aggregated && aggregated.length > 0) {
+      const lastCandle = aggregated[aggregated.length - 1]
+      const bufKey = instrumentKey || activeSymbol
+      candleBufferRef.current[bufKey] = { ...lastCandle }
+    }
 
     const transformed = transformData(aggregated, style)
     updateActiveSeries(transformed, style)
@@ -597,7 +622,7 @@ export default function ChartPanel({
     // Reset price scale auto-scale so new symbol fits perfectly!
     chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
     chartRef.current?.timeScale().fitContent()
-  }, [updateActiveSeries])  // stable — tf read via tfRef
+  }, [updateActiveSeries, activeSymbol, instrumentKey])  // stable — tf read via tfRef
 
   // --- Initialize charts --------------------
   useEffect(() => {
@@ -1076,16 +1101,14 @@ export default function ChartPanel({
     let candleTime
     if (tfSec < 86400) {
       const date = new Date(nowSec * 1000)
-      date.setHours(0, 0, 0, 0)
-      const midnight = Math.floor(date.getTime() / 1000)
+      const midnight = Math.floor(date.setUTCHours(0, 0, 0, 0) / 1000)
       const elapsed = nowSec - midnight
-      const marketOpen = 9 * 3600 + 15 * 60 // 33300 seconds
+      const marketOpen = getMarketOpenOffset(activeSymbol, instrumentKey)
       const bucketElapsed = marketOpen + Math.floor((elapsed - marketOpen) / tfSec) * tfSec
       candleTime = midnight + bucketElapsed
     } else {
       const date = new Date(nowSec * 1000)
-      date.setHours(0, 0, 0, 0)
-      candleTime = Math.floor(date.getTime() / 1000)
+      candleTime = Math.floor(date.setUTCHours(0, 0, 0, 0) / 1000)
     }
 
     // Use instrumentKey as buffer key (unique across symbols)
