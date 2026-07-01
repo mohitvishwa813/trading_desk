@@ -519,11 +519,9 @@ app.get('/api/history/:symbol', async (req, res) => {
   );
   const isFOTarget = isFO || /(_FUT|_OPT|\|FUT|\|OPT|MCX|NCD|CE|PE)/i.test(instrumentKey);
 
-  if (isFOTarget) {
-    startDate.setDate(startDate.getDate() - 30);
-  } else {
-    startDate.setFullYear(startDate.getFullYear() - 1);
-  }
+  // Upstox only allows up to 30 days of 1-minute historical data for all instruments.
+  // Asking for a 1-year range throws a UDAPI1148 'Invalid date range' error.
+  startDate.setDate(startDate.getDate() - 30);
 
   const allCandles = [];
   let currentStart = new Date(startDate);

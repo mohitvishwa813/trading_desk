@@ -81,14 +81,26 @@ export default function App() {
   const [tickCache, setTickCache] = useState({})
 
   // ── Multi-chart layout ──
-  const [layoutMode, setLayoutMode] = useState('single') // 'single' | 'side_by_side' | 'stacked' | 'grid'
+  const [layoutMode, setLayoutMode] = useState(() => {
+    try {
+      return localStorage.getItem('layoutMode_v1') || 'single'
+    } catch {
+      return 'single'
+    }
+  }) // 'single' | 'side_by_side' | 'stacked' | 'grid'
   const [focusedChart, setFocusedChart] = useState(0)
-  const [chartConfigs, setChartConfigs] = useState([
-    { symbol: '', instrumentKey: '' },
-    { symbol: '', instrumentKey: '' },
-    { symbol: '', instrumentKey: '' },
-    { symbol: '', instrumentKey: '' },
-  ])
+  const [chartConfigs, setChartConfigs] = useState(() => {
+    try {
+      const saved = localStorage.getItem('chartConfigs_v2')
+      if (saved) return JSON.parse(saved)
+    } catch {}
+    return [
+      { symbol: '', instrumentKey: '' },
+      { symbol: '', instrumentKey: '' },
+      { symbol: '', instrumentKey: '' },
+      { symbol: '', instrumentKey: '' },
+    ]
+  })
 
   // ── Subscribe chart instrument keys to Upstox feed ──
   const chartSubKeysRef = useRef(new Set())
@@ -145,6 +157,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('chartStyles', JSON.stringify(chartStyles))
   }, [chartStyles])
+
+  useEffect(() => {
+    localStorage.setItem('chartConfigs_v2', JSON.stringify(chartConfigs))
+  }, [chartConfigs])
+
+  useEffect(() => {
+    localStorage.setItem('layoutMode_v1', layoutMode)
+  }, [layoutMode])
 
   // Subscribe whenever a chart, watchlist, or ticker changes, or WebSocket connects
   useEffect(() => {

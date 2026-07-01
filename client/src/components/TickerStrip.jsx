@@ -157,7 +157,7 @@ export default function TickerStrip({
   }
 
   return (
-    <div className="relative flex items-center bg-[#0d0f14]/80 border border-[#2a2e39] rounded h-[28px] w-[760px] shrink-0 select-none pl-1 pr-0">
+    <div className="relative flex items-center bg-[#0d0f14]/80 border border-[#2a2e39] rounded h-[28px] max-w-[660px] w-fit shrink-0 select-none pl-1 pr-0">
 
       {/* Left Scroll Button - Highlighted & Floating */}
       {showLeftArrow && (
