@@ -305,13 +305,22 @@ export default function App() {
 
   // ── WebSocket ──
   const connectWS = useCallback(() => {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const devHost = import.meta.env.VITE_BACKEND_URL
-      ? import.meta.env.VITE_BACKEND_URL.replace(/^https?:\/\//, '')
-      : `${window.location.hostname || '127.0.0.1'}:3000`
+    const getWsUrl = () => {
+      const api = import.meta.env.VITE_API_URL || '';
+      if (api) {
+        const proto = api.startsWith('https') ? 'wss' : 'ws';
+        const host = api.replace(/^https?:\/\//, '');
+        return `${proto}://${host}`;
+      }
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const devHost = import.meta.env.VITE_BACKEND_URL
+        ? import.meta.env.VITE_BACKEND_URL.replace(/^https?:\/\//, '')
+        : `${window.location.hostname || '127.0.0.1'}:3000`;
+      const host = import.meta.env.DEV ? devHost : location.host;
+      return `${proto}://${host}`;
+    };
 
-    const host = import.meta.env.DEV ? devHost : location.host
-    const ws = new WebSocket(`${proto}://${host}`)
+    const ws = new WebSocket(getWsUrl())
 
     ws.onopen = () => {
       setWsConnected(true)

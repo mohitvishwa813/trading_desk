@@ -9,6 +9,13 @@ const { createGunzip } = require('zlib');
 const fs = require('fs');
 
 const app = express();
+const cors = require('cors');
+app.use(cors({
+  origin: function (origin, callback) {
+    callback(null, true);
+  },
+  credentials: true
+}));
 app.use(express.json());
 
 const distPath = path.join(__dirname, 'client', 'dist');
