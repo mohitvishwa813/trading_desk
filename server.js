@@ -367,6 +367,9 @@ async function connectUpstox() {
 
     upstoxWS = new WebSocket(wsUrl, {
       followRedirects: true,
+      headers: {
+        'Authorization': `Bearer ${ACCESS_TOKEN}`
+      }
     });
 
     upstoxWS.on('open', () => {
