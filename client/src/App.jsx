@@ -208,6 +208,9 @@ export default function App() {
   // ── Indicators per chart ──
   const [chartIndicators, setChartIndicators] = useState({})
 
+  // ── Strategy runs per chart ──
+  const [chartStrategies, setChartStrategies] = useState({})
+
   // ── Drawings per chart ──
   const [chartDrawings, setChartDrawings] = useState({})
   const [chartDrawingTools, setChartDrawingTools] = useState({})
@@ -368,7 +371,7 @@ export default function App() {
   }, [connectWS])
 
   // ── Send alert ──
-  const sendAlert = async (signal, customMsg) => {
+  const sendAlert = useCallback(async (signal, customMsg) => {
     const msg = customMsg || `${signal} signal on ${activeSymbol}`
     setAlerts(prev => [
       { signal, symbol: activeSymbol, message: msg, time: new Date().toLocaleTimeString() },
@@ -394,7 +397,21 @@ export default function App() {
     } catch (err) {
       setWebhookStatus(err.message)
     }
-  }
+  }, [activeSymbol, prices])
+
+  const handleStrategyResult = useCallback((result) => {
+    setChartStrategies(prev => ({
+      ...prev,
+      [focusedChart]: result
+    }))
+
+    // Forward strategy alert events to the main Alert Log and webhooks
+    if (result && Array.isArray(result.alerts)) {
+      result.alerts.forEach(al => {
+        sendAlert('INFO', `[Strategy Alert] ${al.message}`)
+      })
+    }
+  }, [focusedChart, sendAlert])
 
   // ── Keyboard shortcut: Ctrl+K / Escape ──
   useEffect(() => {
@@ -511,6 +528,11 @@ export default function App() {
           prices={prices}
           openPrices={openPrices}
           onTickerItemsChange={setTickerItems}
+          strategySignals={chartStrategies[i]?.signals}
+          strategyPlots={chartStrategies[i]?.plots}
+          strategyLines={chartStrategies[i]?.lines}
+          strategyLabels={chartStrategies[i]?.labels}
+          strategyDashboard={chartStrategies[i]?.dashboard}
         />
       )
     }
@@ -642,17 +664,39 @@ export default function App() {
           {renderCharts()}
         </div>
 
-        {/* Sidebar splitter */}
+        {/* Sidebar splitter + always-visible toggle handle */}
         <div
-          className={`w-[5px] shrink-0 relative cursor-col-resize transition-colors duration-150
-            ${sidebarResizing ? 'bg-accent/50' : 'bg-surface hover:bg-accent/30'}
-            ${sidebarCollapsed ? 'opacity-60' : ''}`}
+          className={`shrink-0 relative flex items-center transition-colors duration-150
+            ${sidebarResizing ? 'bg-accent/20' : 'bg-surface hover:bg-accent/10'}
+          `}
+          style={{ width: 14, cursor: 'col-resize' }}
           onMouseDown={startSidebarResize}
           onTouchStart={startSidebarResize}
-          onDoubleClick={toggleSidebar}
         >
+          {/* thin border lines */}
           <div className="absolute inset-y-0 left-0 w-px bg-border" />
-          <div className="absolute inset-y-0 right-0 w-px bg-border" />
+          {/* Always-visible expand/collapse button */}
+          <button
+            id="sidebar-toggle-handle"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2
+              w-4 h-10 rounded flex items-center justify-center
+              bg-[#1a1d24] border border-border text-muted
+              hover:text-accent hover:border-accent hover:bg-[#1e2130]
+              transition-all duration-150 z-10"
+            style={{ fontSize: 10 }}
+          >
+            <svg
+              width="8" height="14" viewBox="0 0 8 14" fill="none"
+              style={{
+                transform: sidebarCollapsed ? 'rotate(180deg)' : 'none',
+                transition: 'transform 200ms ease',
+              }}
+            >
+              <path d="M6 2L2 7L6 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
         </div>
 
         {/* Sidebar (right) */}
@@ -672,6 +716,9 @@ export default function App() {
             prices={prices}
             tick={tick}
             instrumentKey={getInstrumentKey(activeSymbol)}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleCollapse={toggleSidebar}
+            onStrategyResult={handleStrategyResult}
           />
         </div>
       </div>

@@ -432,6 +432,11 @@ export default function ChartPanel({
   prices = {},
   openPrices = {},
   onTickerItemsChange = () => {},
+  strategySignals = [],
+  strategyPlots = [],
+  strategyLines = [],
+  strategyLabels = [],
+  strategyDashboard = {},
 }) {
   // --- State ----------------------------------
   const [tf, setTF] = useState('5m')
@@ -513,7 +518,7 @@ export default function ChartPanel({
   const fetchIdRef = useRef(0)
   const loadedDataRef = useRef([])
   const baseCandlesRef = useRef([])
-  const priceScaleMarginsRef = useRef({ top: 0.2, bottom: 0.2 })
+  const priceScaleMarginsRef = useRef({ top: 0.12, bottom: 0.3 })
   const svgRef = useRef(null)
   const mousePosRef = useRef(null)
   const dragStartRef = useRef(null) // { drawingId, startPoints, mouseX, mouseY }
@@ -633,7 +638,8 @@ export default function ChartPanel({
       layout: { background: { color: '#0d0f14' }, textColor: '#e2e8f0', attributionLogo: false },
       grid: { vertLines: { color: '#1e2330' }, horzLines: { color: '#1e2330' } },
       crosshair: { mode: 0 },
-      rightPriceScale: { borderColor: '#252a36', scaleMargins: { top: 0.2, bottom: 0.2 } },
+      rightPriceScale: { borderColor: '#252a36', scaleMargins: { top: 0.12, bottom: 0.3 } },
+      leftPriceScale: { visible: true, borderColor: '#252a36', scaleMargins: { top: 0.7, bottom: 0.05 } },
       timeScale: { borderColor: '#252a36', timeVisible: true, secondsVisible: false, visible: true },
       handleScroll: {
         mouseWheel: true,
@@ -1285,6 +1291,113 @@ export default function ChartPanel({
     })
   }, [indicators, dataVersion])
 
+  // --- Strategy Plots & Signals Rendering --------------------
+  const strategySeriesRefs = useRef([])
+
+  const getActiveSeries = useCallback(() => {
+    const style = chartStyleRef.current
+    if (isCandleSeries(style)) return candleSeriesRef.current
+    if (isBarSeries(style)) return barSeriesRef.current
+    if (isLineSeries(style)) return lineSeriesRef.current
+    if (isAreaSeries(style)) return areaSeriesRef.current
+    if (isBaselineSeries(style)) return baselineSeriesRef.current
+    if (isColumnSeries(style)) return histogramSeriesRef.current
+    return null
+  }, [])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    // 1. Remove old strategy line plots
+    strategySeriesRefs.current.forEach(s => {
+      try { chart.removeSeries(s) } catch { /* ok */ }
+    })
+    strategySeriesRefs.current = []
+
+    // 2. Add new strategy line plots
+    if (strategyPlots && strategyPlots.length > 0) {
+      strategyPlots.forEach(p => {
+        if (!p.data || p.data.length === 0) return
+
+        let scaleId = 'right'
+        if (loadedDataRef.current && loadedDataRef.current.length > 0) {
+          let sumClose = 0
+          let countClose = 0
+          loadedDataRef.current.forEach(c => {
+            if (c.close) { sumClose += c.close; countClose++ }
+          })
+          const avgClose = countClose > 0 ? sumClose / countClose : 100
+
+          let sumVal = 0
+          let countVal = 0
+          p.data.forEach(d => {
+            if (d.value != null) { sumVal += d.value; countVal++ }
+          })
+          const avgPlot = countVal > 0 ? sumVal / countVal : 0
+
+          // If main price is high and indicator has low values (e.g. < 150), put on left scale
+          if (avgClose > 500 && avgPlot < 150) {
+            scaleId = 'left'
+          }
+        }
+
+        const series = chart.addLineSeries({
+          color: p.color || '#4f9cf9',
+          lineWidth: 1.5,
+          priceScaleId: scaleId,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        })
+        series.setData(p.data)
+        strategySeriesRefs.current.push(series)
+      })
+    }
+
+    // 3. Render strategy signals on the active series
+    const activeSeries = getActiveSeries()
+    if (activeSeries) {
+      if (strategySignals && strategySignals.length > 0) {
+        const markers = strategySignals.map(sig => {
+          const type = sig.type?.toUpperCase()
+          if (type === 'BUY') {
+            return {
+              time: sig.time,
+              position: 'belowPrice',
+              color: '#26a69a',
+              shape: 'arrowUp',
+              text: sig.label || 'BUY',
+              size: 1,
+            }
+          } else if (type === 'SELL') {
+            return {
+              time: sig.time,
+              position: 'abovePrice',
+              color: '#ef5350',
+              shape: 'arrowDown',
+              text: sig.label || 'SELL',
+              size: 1,
+            }
+          } else if (type === 'CLOSE') {
+            return {
+              time: sig.time,
+              position: 'inBar',
+              color: '#94a3b8',
+              shape: 'circle',
+              text: sig.label || 'CLOSE',
+              size: 0.5,
+            }
+          }
+          return null
+        }).filter(Boolean)
+        activeSeries.setMarkers(markers)
+      } else {
+        // Only clear markers if they were set by strategy (or generally clear them if no strategy active)
+        activeSeries.setMarkers([])
+      }
+    }
+  }, [strategySignals, strategyPlots, dataVersion, chartStyle, getActiveSeries])
+
   // --- Keyboard handlers for drawings --------
   useEffect(() => {
     const handler = (e) => {
@@ -1321,9 +1434,9 @@ export default function ChartPanel({
       chartRef.current.priceScale('right').applyOptions({ autoScale: true })
       chartRef.current.timeScale().fitContent()
       chartRef.current.applyOptions({
-        rightPriceScale: { scaleMargins: { top: 0.2, bottom: 0.2 } },
+        rightPriceScale: { scaleMargins: { top: 0.12, bottom: 0.3 } },
       })
-      priceScaleMarginsRef.current = { top: 0.2, bottom: 0.2 }
+      priceScaleMarginsRef.current = { top: 0.12, bottom: 0.3 }
     }
     setCtxMenu(prev => ({ ...prev, show: false }))
   }, [])
@@ -1397,6 +1510,104 @@ export default function ChartPanel({
     const hovId = drawingState.hoveredId
     return drawings.map(d => renderDrawingElement(d, chart, series, cw, ch, selId, hovId))
   }, [drawings, visibleRange, chartStyle, drawingState.selectedId, drawingState.hoveredId])
+
+  // --- Render strategy custom SVG drawings (lines & labels) ---
+  const strategySvgElements = useMemo(() => {
+    if (!chartRef.current || !activeSeriesRef.current) return null
+    const chart = chartRef.current
+    const series = activeSeriesRef.current
+    const container = mainChartContainerRef.current
+    const cw = container?.offsetWidth || 800
+
+    const elements = []
+
+    if (strategyLines && strategyLines.length > 0) {
+      strategyLines.forEach(l => {
+        const x1 = chart.timeScale().timeToCoordinate(l.x1)
+        const y1 = series.priceToCoordinate(l.y1)
+        const x2 = chart.timeScale().timeToCoordinate(l.x2)
+        const y2 = series.priceToCoordinate(l.y2)
+
+        if (x1 == null || y1 == null || x2 == null || y2 == null) return
+
+        const finalX2 = l.extendRight ? cw : x2
+        const isDashed = l.style === 'dashed'
+
+        elements.push(
+          <line
+            key={`s-line-${l.id}`}
+            x1={x1}
+            y1={y1}
+            x2={finalX2}
+            y2={y2}
+            stroke={l.color || '#4f9cf9'}
+            strokeWidth={l.width || 1.5}
+            strokeDasharray={isDashed ? '4 3' : undefined}
+            pointerEvents="none"
+          />
+        )
+      })
+    }
+
+    if (strategyLabels && strategyLabels.length > 0) {
+      const ch = container?.offsetHeight || 400
+      strategyLabels.forEach(lbl => {
+        const x = chart.timeScale().timeToCoordinate(lbl.x)
+        const y = series.priceToCoordinate(lbl.y)
+
+        if (x == null || y == null) return
+        if (lbl.id.startsWith('sig_') || lbl.id.startsWith('exit_')) {
+          console.log(`[LABEL DBG] id: ${lbl.id}, text: ${lbl.text}, inputY: ${lbl.y}, outputY: ${y}, x: ${x}`)
+        }
+
+        const padding = 6
+        let offsetX = x
+        let offsetY = y
+
+        if (lbl.position === 'left') offsetX -= padding
+        else if (lbl.position === 'right') offsetX += padding
+        else if (lbl.position === 'above') offsetY -= padding
+        else if (lbl.position === 'below') offsetY += padding
+
+        // Clamp y-coordinate to stay within the visible container bounds
+        offsetY = Math.max(35, Math.min(offsetY, ch - 20))
+
+        let textAnchor = 'middle'
+        let dominantBaseline = 'middle'
+        if (lbl.position === 'left') textAnchor = 'end'
+        else if (lbl.position === 'right') textAnchor = 'start'
+        else if (lbl.position === 'above') dominantBaseline = 'text-after-edge'
+        else if (lbl.position === 'below') dominantBaseline = 'text-before-edge'
+
+        const strokeColor = lbl.color || '#131722'
+
+        elements.push(
+          <g key={`s-lbl-${lbl.id}`} pointerEvents="none">
+            <text
+              x={offsetX}
+              y={offsetY}
+              fill={lbl.textColor || '#e2e8f0'}
+              fontSize="10"
+              fontFamily="monospace"
+              textAnchor={textAnchor}
+              dominantBaseline={dominantBaseline}
+              style={{
+                paintOrder: 'stroke',
+                stroke: strokeColor,
+                strokeWidth: '3px',
+                strokeLinecap: 'round',
+                strokeLinejoin: 'round',
+              }}
+            >
+              {lbl.text}
+            </text>
+          </g>
+        )
+      })
+    }
+
+    return elements
+  }, [strategyLines, strategyLabels, visibleRange, chartStyle])
 
   // --- Preview for two-click drawings ---
   const previewElements = useMemo(() => {
@@ -1644,14 +1855,32 @@ export default function ChartPanel({
 
         <svg
           ref={svgRef}
-          className={`absolute left-10 top-0 right-0 bottom-0 z-10 transition-none ${
+          className={`absolute left-10 top-0 right-0 bottom-0 z-40 transition-none overflow-hidden ${
             activeDrawingTool !== 'cursor' ? 'pointer-events-auto' : 'pointer-events-none'
           } ${activeDrawingTool !== 'cursor' ? 'cursor-crosshair' : ''}`}
-          style={{ width: 'calc(100% - 40px)', height: '100%' }}
+          style={{ width: 'calc(100% - 40px)', height: '100%', overflow: 'hidden' }}
         >
           {drawingSvgElements}
+          {strategySvgElements}
           {previewElements}
         </svg>
+
+        {/* Strategy Dashboard Stats Overlay */}
+        {strategyDashboard && Object.keys(strategyDashboard).length > 0 && (
+          <div className="absolute top-14 left-14 z-20 bg-[#131722]/90 border border-[#2a2e39] rounded-md p-2.5 shadow-lg min-w-[160px] font-mono text-[10px] space-y-1 z-30 pointer-events-auto select-none">
+            <div className="text-[9px] text-muted uppercase tracking-wider border-b border-[#2a2e39] pb-1 mb-1 font-bold">
+              Strategy Stats
+            </div>
+            {Object.entries(strategyDashboard).map(([lbl, row]) => (
+              <div key={lbl} className="flex justify-between items-center gap-4 py-0.5">
+                <span className="text-[#94a3b8]">{lbl}</span>
+                <span style={{ color: row.color || '#e2e8f0' }} className="font-bold">
+                  {row.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div
           ref={mainChartContainerRef}

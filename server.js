@@ -450,6 +450,62 @@ app.post('/api/alert', async (req, res) => {
   }
 });
 
+// ─── Strategy CRUD ────────────────────────────────────────────────────────────
+const STRATEGIES_FILE = path.join(__dirname, 'strategies.json');
+
+function loadStrategies() {
+  try {
+    if (!fs.existsSync(STRATEGIES_FILE)) return [];
+    return JSON.parse(fs.readFileSync(STRATEGIES_FILE, 'utf8'));
+  } catch { return []; }
+}
+
+function saveStrategies(list) {
+  fs.writeFileSync(STRATEGIES_FILE, JSON.stringify(list, null, 2), 'utf8');
+}
+
+// List all strategies
+app.get('/api/strategies', (req, res) => {
+  const list = loadStrategies().map(({ id, name, updatedAt }) => ({ id, name, updatedAt }));
+  res.json(list);
+});
+
+// Get one strategy (with full code)
+app.get('/api/strategies/:id', (req, res) => {
+  const list = loadStrategies();
+  const s = list.find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Not found' });
+  res.json(s);
+});
+
+// Create or update a strategy
+app.post('/api/strategies', (req, res) => {
+  const { id, name, code } = req.body || {};
+  if (!name || !code) return res.status(400).json({ error: 'name and code required' });
+  const list = loadStrategies();
+  const now = new Date().toISOString();
+  const existing = id ? list.findIndex(x => x.id === id) : -1;
+  if (existing >= 0) {
+    list[existing] = { ...list[existing], name, code, updatedAt: now };
+    saveStrategies(list);
+    return res.json(list[existing]);
+  }
+  const newStrategy = { id: `s_${Date.now()}`, name, code, createdAt: now, updatedAt: now };
+  list.push(newStrategy);
+  saveStrategies(list);
+  res.json(newStrategy);
+});
+
+// Delete a strategy
+app.delete('/api/strategies/:id', (req, res) => {
+  let list = loadStrategies();
+  const before = list.length;
+  list = list.filter(x => x.id !== req.params.id);
+  if (list.length === before) return res.status(404).json({ error: 'Not found' });
+  saveStrategies(list);
+  res.json({ success: true });
+});
+
 function getBinanceInterval(tf) {
   switch (tf) {
     case '1m': return '1m';

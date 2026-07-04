@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import StrategyEditor from './StrategyEditor'
 
 const LS_KEY = 'upstox_paper_positions'
+const LS_TAB  = 'sidebar_tab'
 
 function loadPositions() {
   try {
@@ -20,6 +22,9 @@ function nextId() {
   return ++posIdCounter
 }
 
+/* ================================================================== */
+/*  ROOT SIDEBAR                                                        */
+/* ================================================================== */
 export default function Sidebar({
   activeSymbol,
   price,
@@ -29,29 +34,137 @@ export default function Sidebar({
   prices,
   tick,
   instrumentKey,
+  sidebarCollapsed,
+  onToggleCollapse,
+  onStrategyResult,
 }) {
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return localStorage.getItem(LS_TAB) || 'trade' } catch { return 'trade' }
+  })
+
+  const switchTab = (tab) => {
+    setActiveTab(tab)
+    try { localStorage.setItem(LS_TAB, tab) } catch {}
+  }
+
+
   return (
-    <div className="w-full bg-surface flex flex-col shrink-0 overflow-hidden">
-      <TradingPanel
-        activeSymbol={activeSymbol}
-        price={price}
-        prices={prices}
-        tick={tick}
-        instrumentKey={instrumentKey}
-        onSendAlert={onSendAlert}
-      />
-      <div className="text-[10px] font-bold tracking-widest text-muted uppercase px-3.5 py-2.5 border-b border-border bg-[#0d0f14]">
-        Alert Log
+    <div className="w-full bg-surface flex flex-col shrink-0 overflow-hidden h-full">
+
+      {/* ── Tab Navigation Header ── */}
+      <div
+        className="flex items-center border-b border-border shrink-0"
+        style={{ background: '#0d0f14', minHeight: 40 }}
+      >
+        {/* Trade tab */}
+        <button
+          id="sidebar-tab-trade"
+          onClick={() => switchTab('trade')}
+          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${
+            activeTab === 'trade'
+              ? 'text-accent'
+              : 'text-muted hover:text-[#e2e8f0]'
+          }`}
+        >
+          Trade
+          {activeTab === 'trade' && (
+            <span className="absolute bottom-0 left-0 w-full h-[2px] bg-accent rounded-full" />
+          )}
+        </button>
+
+        {/* Terminal tab */}
+        <button
+          id="sidebar-tab-terminal"
+          onClick={() => switchTab('terminal')}
+          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${
+            activeTab === 'terminal'
+              ? 'text-accent'
+              : 'text-muted hover:text-[#e2e8f0]'
+          }`}
+        >
+          Terminal
+          {activeTab === 'terminal' && (
+            <span className="absolute bottom-0 left-0 w-full h-[2px] bg-accent rounded-full" />
+          )}
+        </button>
+
+        {/* Collapse button */}
+        <button
+          id="sidebar-collapse-btn"
+          onClick={onToggleCollapse}
+          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="shrink-0 w-8 h-full flex items-center justify-center text-muted hover:text-[#e2e8f0] hover:bg-white/5 transition-colors duration-150 border-l border-border"
+        >
+          {/* chevron icon flips based on collapsed state */}
+          <svg
+            width="14" height="14" viewBox="0 0 14 14" fill="none"
+            style={{ transform: sidebarCollapsed ? 'rotate(180deg)' : 'none', transition: 'transform 200ms ease' }}
+          >
+            <path d="M9 3L5 7L9 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
       </div>
-      <AlertLog alerts={alerts} />
-      <WebhookPanel status={webhookStatus} />
+
+      {/* ── Tab Content ── */}
+      <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
+        {activeTab === 'trade' ? (
+          <TradeTabContent
+            activeSymbol={activeSymbol}
+            price={price}
+            alerts={alerts}
+            webhookStatus={webhookStatus}
+            onSendAlert={onSendAlert}
+            prices={prices}
+            tick={tick}
+            instrumentKey={instrumentKey}
+          />
+        ) : (
+          <StrategyEditor activeSymbol={activeSymbol} onStrategyResult={onStrategyResult} />
+        )}
+      </div>
     </div>
   )
 }
 
-/* ------------------------------------------------------------------ */
-/*  TRADING PANEL                                                     */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  TRADE TAB — existing content                                        */
+/* ================================================================== */
+function TradeTabContent({ activeSymbol, price, alerts, webhookStatus, onSendAlert, prices, tick, instrumentKey }) {
+  return (
+    <div className="flex flex-col min-h-0 flex-1">
+
+      {/* ── Top: Trading form (scrolls independently) ── */}
+      <div className="overflow-y-auto shrink-0" style={{ maxHeight: '55%' }}>
+        <TradingPanel
+          activeSymbol={activeSymbol}
+          price={price}
+          prices={prices}
+          tick={tick}
+          instrumentKey={instrumentKey}
+          onSendAlert={onSendAlert}
+        />
+      </div>
+
+      {/* ── Bottom: Alert Log + Webhook (always visible, fills remaining space) ── */}
+      <div className="flex flex-col flex-1 min-h-0 border-t border-border">
+        {/* Alert Log header */}
+        <div className="text-[10px] font-bold tracking-widest text-muted uppercase px-3.5 py-2.5 border-b border-border bg-[#0d0f14] shrink-0">
+          Alert Log
+        </div>
+        {/* Alert entries — scrollable, always gets at least 150px */}
+        <div className="flex-1 overflow-y-auto min-h-[150px]">
+          <AlertLog alerts={alerts} />
+        </div>
+        <WebhookPanel status={webhookStatus} />
+      </div>
+
+    </div>
+  )
+}
+
+/* ================================================================== */
+/*  TRADING PANEL                                                       */
+/* ================================================================== */
 function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSendAlert }) {
   const [tradingMode, setTradingMode] = useState(null) // 'paper' | 'live' | null
 
@@ -81,9 +194,9 @@ function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSend
   )
 }
 
-/* ------------------------------------------------------------------ */
-/*  MODE TOGGLE                                                        */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  MODE TOGGLE                                                         */
+/* ================================================================== */
 function ModeToggle({ value, onChange }) {
   const btn = (label, mode) => (
     <button
@@ -108,30 +221,21 @@ function ModeToggle({ value, onChange }) {
   )
 }
 
-/* ------------------------------------------------------------------ */
-/*  TRADING FORM                                                       */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  TRADING FORM                                                        */
+/* ================================================================== */
 function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumentKey, onSendAlert }) {
-  // Order form state
   const [qty, setQty] = useState('25')
   const [orderType, setOrderType] = useState('Market')
   const [limitPrice, setLimitPrice] = useState('')
   const [triggerPrice, setTriggerPrice] = useState('')
   const [product, setProduct] = useState('MIS')
-
-  // Risk management
   const [stopLoss, setStopLoss] = useState('')
   const [target, setTarget] = useState('')
-
-  // Paper positions
   const [positions, setPositions] = useState(loadPositions)
 
-  // Persist & update LTP from prices stream
-  useEffect(() => {
-    savePositions(positions)
-  }, [positions])
+  useEffect(() => { savePositions(positions) }, [positions])
 
-  // Update LTP of all positions from live prices
   useEffect(() => {
     if (!prices || Object.keys(prices).length === 0) return
     setPositions(prev =>
@@ -142,51 +246,16 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
     )
   }, [prices])
 
-  const priceDisabled = orderType === 'Market' || orderType === 'SL-M'
+  const priceDisabled   = orderType === 'Market' || orderType === 'SL-M'
   const triggerDisabled = orderType === 'Market' || orderType === 'Limit'
-
   const rr = useMemoRR(stopLoss, target, price)
 
   const placeBuyOrder = useCallback(() => {
-    placeOrder({
-      side: 'BUY',
-      tradingMode,
-      qty,
-      orderType,
-      limitPrice,
-      triggerPrice,
-      product,
-      stopLoss,
-      target,
-      activeSymbol,
-      price,
-      positions,
-      setPositions,
-      onSendAlert,
-      prices,
-      tick,
-    })
+    placeOrder({ side: 'BUY', tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick })
   }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick])
 
   const placeSellOrder = useCallback(() => {
-    placeOrder({
-      side: 'SELL',
-      tradingMode,
-      qty,
-      orderType,
-      limitPrice,
-      triggerPrice,
-      product,
-      stopLoss,
-      target,
-      activeSymbol,
-      price,
-      positions,
-      setPositions,
-      onSendAlert,
-      prices,
-      tick,
-    })
+    placeOrder({ side: 'SELL', tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick })
   }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick])
 
   const closePosition = useCallback((id) => {
@@ -200,7 +269,9 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
     })
   }, [onSendAlert])
 
-  const formattedPrice = price ? `₹${Number(price).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'
+  const formattedPrice = price
+    ? `₹${Number(price).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : '—'
 
   return (
     <div className="p-3 pt-0 space-y-3">
@@ -214,66 +285,39 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
       <div>
         <div className="text-[10px] font-bold tracking-widest text-muted uppercase mb-1.5">Order Form</div>
         <div className="space-y-1.5">
-          {/* Quantity */}
           <div>
             <div className="text-[10px] text-muted mb-0.5">Quantity</div>
-            <input
-              type="number"
-              value={qty}
-              onChange={e => setQty(e.target.value)}
-              className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none"
-            />
+            <input type="number" value={qty} onChange={e => setQty(e.target.value)}
+              className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none" />
           </div>
-
-          {/* Order Type */}
           <div>
             <div className="text-[10px] text-muted mb-0.5">Order Type</div>
-            <select
-              value={orderType}
-              onChange={e => setOrderType(e.target.value)}
-              className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none"
-            >
+            <select value={orderType} onChange={e => setOrderType(e.target.value)}
+              className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none">
               <option value="Market">Market</option>
               <option value="Limit">Limit</option>
               <option value="SL">SL</option>
               <option value="SL-M">SL-M</option>
             </select>
           </div>
-
-          {/* Limit Price */}
           <div>
             <div className="text-[10px] text-muted mb-0.5">Price</div>
-            <input
-              type="number"
-              value={limitPrice}
-              onChange={e => setLimitPrice(e.target.value)}
+            <input type="number" value={limitPrice} onChange={e => setLimitPrice(e.target.value)}
               disabled={priceDisabled}
               className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none disabled:opacity-40"
-              placeholder={priceDisabled ? 'Auto (Market)' : 'Enter price'}
-            />
+              placeholder={priceDisabled ? 'Auto (Market)' : 'Enter price'} />
           </div>
-
-          {/* Trigger Price */}
           <div>
             <div className="text-[10px] text-muted mb-0.5">Trigger Price</div>
-            <input
-              type="number"
-              value={triggerPrice}
-              onChange={e => setTriggerPrice(e.target.value)}
+            <input type="number" value={triggerPrice} onChange={e => setTriggerPrice(e.target.value)}
               disabled={triggerDisabled}
               className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none disabled:opacity-40"
-              placeholder={triggerDisabled ? 'N/A' : 'Enter trigger'}
-            />
+              placeholder={triggerDisabled ? 'N/A' : 'Enter trigger'} />
           </div>
-
-          {/* Product */}
           <div>
             <div className="text-[10px] text-muted mb-0.5">Product</div>
-            <select
-              value={product}
-              onChange={e => setProduct(e.target.value)}
-              className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none"
-            >
+            <select value={product} onChange={e => setProduct(e.target.value)}
+              className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none">
               <option value="MIS">MIS (Intraday)</option>
               <option value="CNC">CNC (Delivery)</option>
               <option value="NRML">NRML (Normal)</option>
@@ -288,23 +332,15 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
         <div className="grid grid-cols-2 gap-1.5">
           <div>
             <div className="text-[10px] text-muted mb-0.5">Stop Loss</div>
-            <input
-              type="number"
-              value={stopLoss}
-              onChange={e => setStopLoss(e.target.value)}
+            <input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)}
               className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none"
-              placeholder="pts"
-            />
+              placeholder="pts" />
           </div>
           <div>
             <div className="text-[10px] text-muted mb-0.5">Target</div>
-            <input
-              type="number"
-              value={target}
-              onChange={e => setTarget(e.target.value)}
+            <input type="number" value={target} onChange={e => setTarget(e.target.value)}
               className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1.5 rounded font-mono text-xs focus:border-accent focus:outline-none"
-              placeholder="pts"
-            />
+              placeholder="pts" />
           </div>
         </div>
         {rr && (
@@ -316,16 +352,12 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
 
       {/* BUY / SELL Buttons */}
       <div className="flex gap-1.5">
-        <button
-          onClick={placeBuyOrder}
-          className="flex-1 py-2 rounded font-bold text-xs bg-green text-white hover:opacity-85 transition-opacity"
-        >
+        <button onClick={placeBuyOrder}
+          className="flex-1 py-2 rounded font-bold text-xs bg-green text-white hover:opacity-85 transition-opacity">
           BUY {tradingMode === 'paper' ? '(Paper)' : ''}
         </button>
-        <button
-          onClick={placeSellOrder}
-          className="flex-1 py-2 rounded font-bold text-xs bg-red text-white hover:opacity-85 transition-opacity"
-        >
+        <button onClick={placeSellOrder}
+          className="flex-1 py-2 rounded font-bold text-xs bg-red text-white hover:opacity-85 transition-opacity">
           SELL {tradingMode === 'paper' ? '(Paper)' : ''}
         </button>
       </div>
@@ -338,14 +370,12 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
   )
 }
 
-/* ------------------------------------------------------------------ */
-/*  OPEN POSITIONS TABLE                                               */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  OPEN POSITIONS TABLE                                                */
+/* ================================================================== */
 function OpenPositions({ positions, onClose }) {
   if (!positions || positions.length === 0) {
-    return (
-      <div className="text-[11px] text-muted pt-1">No open positions</div>
-    )
+    return <div className="text-[11px] text-muted pt-1">No open positions</div>
   }
 
   return (
@@ -378,10 +408,8 @@ function OpenPositions({ positions, onClose }) {
                     {pnl >= 0 ? '+' : ''}{pnl.toFixed(1)}
                   </td>
                   <td className="pl-1 py-1.5 text-right">
-                    <button
-                      onClick={() => onClose(pos.id)}
-                      className="text-[10px] text-muted hover:text-red transition-colors"
-                    >
+                    <button onClick={() => onClose(pos.id)}
+                      className="text-[10px] text-muted hover:text-red transition-colors">
                       Close
                     </button>
                   </td>
@@ -395,9 +423,9 @@ function OpenPositions({ positions, onClose }) {
   )
 }
 
-/* ------------------------------------------------------------------ */
-/*  HELPERS                                                            */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  HELPERS                                                             */
+/* ================================================================== */
 function calcPnl(pos) {
   const ltp = pos.ltp ?? pos.avgPrice
   if (pos.qty > 0) return (ltp - pos.avgPrice) * pos.qty
@@ -405,11 +433,11 @@ function calcPnl(pos) {
 }
 
 function calcRR(sl, target, price) {
-  const slNum = parseFloat(sl)
+  const slNum     = parseFloat(sl)
   const targetNum = parseFloat(target)
-  const priceNum = parseFloat(price)
+  const priceNum  = parseFloat(price)
   if (!slNum || !targetNum || !priceNum) return null
-  const risk = Math.abs(slNum)
+  const risk   = Math.abs(slNum)
   const reward = Math.abs(targetNum)
   if (risk === 0) return null
   return (reward / risk).toFixed(1)
@@ -417,50 +445,25 @@ function calcRR(sl, target, price) {
 
 function useMemoRR(sl, target, price) {
   const [rr, setRr] = useState(null)
-  useEffect(() => {
-    setRr(calcRR(sl, target, price))
-  }, [sl, target, price])
+  useEffect(() => { setRr(calcRR(sl, target, price)) }, [sl, target, price])
   return rr
 }
 
-/* ------------------------------------------------------------------ */
-/*  PLACE ORDER                                                        */
-/* ------------------------------------------------------------------ */
-async function placeOrder({
-  side,
-  tradingMode,
-  qty,
-  orderType,
-  limitPrice,
-  triggerPrice,
-  product,
-  stopLoss,
-  target,
-  activeSymbol,
-  price,
-  positions,
-  setPositions,
-  onSendAlert,
-  prices,
-  tick,
-}) {
+/* ================================================================== */
+/*  PLACE ORDER                                                         */
+/* ================================================================== */
+async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick }) {
   const qtyNum = parseInt(qty, 10)
   if (!qtyNum || qtyNum <= 0) {
     onSendAlert('INFO', `[${side}] Invalid quantity`)
     return
   }
 
-  // Fallback price detection to ensure we never get 0 or NaN fill prices
   let fillPrice = parseFloat(price) || 0
-  if (!fillPrice && prices && prices[activeSymbol]) {
-    fillPrice = parseFloat(prices[activeSymbol])
-  }
-  if (!fillPrice && tick && (tick.symbol === activeSymbol || tick.instrumentKey === activeSymbol)) {
-    fillPrice = parseFloat(tick.ltp)
-  }
+  if (!fillPrice && prices && prices[activeSymbol]) fillPrice = parseFloat(prices[activeSymbol])
+  if (!fillPrice && tick && (tick.symbol === activeSymbol || tick.instrumentKey === activeSymbol)) fillPrice = parseFloat(tick.ltp)
 
   if (tradingMode === 'paper') {
-    // Paper trading — add local position
     const pos = {
       id: nextId(),
       symbol: activeSymbol,
@@ -473,12 +476,10 @@ async function placeOrder({
       target,
     }
     setPositions(prev => [...prev, pos])
-    const msg = `${side} ${qtyNum} ${activeSymbol} @ ₹${fillPrice.toFixed(2)} (Paper)`
-    onSendAlert(side, msg)
+    onSendAlert(side, `${side} ${qtyNum} ${activeSymbol} @ ₹${fillPrice.toFixed(2)} (Paper)`)
     return
   }
 
-  // Live trading — POST /api/order
   const body = {
     symbol: activeSymbol,
     side,
@@ -494,13 +495,9 @@ async function placeOrder({
   onSendAlert('INFO', `[LIVE] Placing ${side} order…`)
 
   try {
-    const res = await fetch('/api/order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    const res    = await fetch('/api/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     const result = await res.json()
-    const msg = result.success
+    const msg    = result.success
       ? `[LIVE] ${side} ${qtyNum} ${activeSymbol} — ${result.orderId ? 'Order #' + result.orderId : 'Placed'}`
       : `[LIVE] ${side} failed: ${result.error || 'Unknown error'}`
     onSendAlert(result.success ? side : 'INFO', msg)
@@ -509,18 +506,18 @@ async function placeOrder({
   }
 }
 
-/* ------------------------------------------------------------------ */
-/*  ALERT LOG                                                          */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  ALERT LOG                                                           */
+/* ================================================================== */
 function AlertLog({ alerts }) {
   const colorMap = {
-    BUY: 'border-l-green bg-green/5',
+    BUY:  'border-l-green bg-green/5',
     SELL: 'border-l-red bg-red/5',
     INFO: 'border-l-accent bg-accent/5',
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+    <div className="p-2 space-y-1.5">
       {alerts.map((a, i) => (
         <div key={i} className={`p-2 rounded border-l-[3px] text-[11px] leading-relaxed ${colorMap[a.signal] || colorMap.INFO}`}>
           <strong>{a.signal} {a.symbol && `— ${a.symbol}`}</strong><br />
@@ -539,12 +536,12 @@ function priceFromAlert(a) {
   return a.message.match(/₹([\d.]+)/)?.[1] || 0
 }
 
-/* ------------------------------------------------------------------ */
-/*  WEBHOOK PANEL                                                      */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  WEBHOOK PANEL                                                       */
+/* ================================================================== */
 function WebhookPanel({ status }) {
   return (
-    <div className="p-3 border-t border-border">
+    <div className="p-3 border-t border-border shrink-0">
       <div className="text-[10px] font-bold tracking-widest text-muted uppercase mb-2">Make.com Webhook</div>
       <input
         type="text"
