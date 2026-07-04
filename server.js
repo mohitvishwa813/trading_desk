@@ -172,18 +172,74 @@ function connectBinance() {
 
     binanceWS.on('error', (err) => {
       console.error('Binance WS error:', err.message);
-      if (err.message && err.message.includes('451')) {
-        console.warn('⚠️ Binance is restricted in this region (HTTP 451). Disabling auto-reconnect.');
+      if (err.message && (err.message.includes('451') || err.message.includes('403') || err.message.includes('Unexpected server response'))) {
+        console.warn('⚠️ Binance is restricted in this region. Falling back to Coinbase WS.');
         binanceBlocked = true;
+        connectCoinbase();
       }
     });
   } catch (err) {
     console.error('Binance WS initialization failed:', err.message);
-    if (err.message && err.message.includes('451')) {
+    if (err.message && (err.message.includes('451') || err.message.includes('403') || err.message.includes('Unexpected server response'))) {
       binanceBlocked = true;
+      connectCoinbase();
     } else {
       setTimeout(connectBinance, 5000);
     }
+  }
+}
+
+let coinbaseWS = null;
+function connectCoinbase() {
+  console.log('🔌 Connecting to Coinbase WebSocket for BTC-USD as fallback...');
+  try {
+    coinbaseWS = new WebSocket('wss://ws-feed.exchange.coinbase.com');
+
+    coinbaseWS.on('open', () => {
+      console.log('✅ Connected to Coinbase WebSocket for BTC-USD fallback');
+      const sub = {
+        type: 'subscribe',
+        product_ids: ['BTC-USD'],
+        channels: ['ticker']
+      };
+      coinbaseWS.send(JSON.stringify(sub));
+    });
+
+    coinbaseWS.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === 'ticker' && msg.price) {
+          const price = parseFloat(msg.price);
+          const tick = {
+            instrumentKey: 'BINANCE|BTCUSD',
+            symbol: 'BTCUSD',
+            ltp: price,
+            timestamp: msg.time ? new Date(msg.time).getTime() : Date.now(),
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: parseFloat(msg.volume_24h || 0),
+            mode: currentMode.toUpperCase(),
+          };
+          broadcast({ type: 'tick', data: tick });
+        }
+      } catch (e) {
+        console.error('Coinbase decode error:', e.message);
+      }
+    });
+
+    coinbaseWS.on('close', () => {
+      console.log('🔄 Coinbase WS closed — reconnecting in 5s...');
+      setTimeout(connectCoinbase, 5000);
+    });
+
+    coinbaseWS.on('error', (err) => {
+      console.error('Coinbase WS error:', err.message);
+    });
+  } catch (err) {
+    console.error('Coinbase WS initialization failed:', err.message);
+    setTimeout(connectCoinbase, 5000);
   }
 }
 
@@ -564,6 +620,25 @@ app.get('/api/history/:symbol', async (req, res) => {
   // Resolve trading symbol → instrument key, or use query parameter key first
   const instrumentKey = req.query.key || symbolToKey[cleanSymbol] || symbolToKey[symbol.toUpperCase()] || symbol;
 
+  // Coinbase Granularity helper
+  const getCoinbaseGranularity = (tframe) => {
+    switch (tframe) {
+      case '1m': return 60;
+      case '3m': return 60;
+      case '5m': return 300;
+      case '10m': return 300;
+      case '15m': return 900;
+      case '30m': return 1800;
+      case '1h': return 3600;
+      case '2h': return 3600;
+      case '4h': return 3600;
+      case '1d': return 86400;
+      case '1w': return 86400 * 7;
+      case '1month': return 86400 * 30;
+      default: return 60;
+    }
+  };
+
   // Handle BTCUSD from Binance
   if (symbol.toUpperCase() === 'BTCUSD' || instrumentKey === 'BINANCE|BTCUSD') {
     try {
@@ -580,8 +655,26 @@ app.get('/api/history/:symbol', async (req, res) => {
       }));
       return res.json({ candles, mode: currentMode.toUpperCase() });
     } catch (err) {
-      console.error('Binance history error:', err.message);
-      return res.json({ candles: [], error: err.message });
+      console.error('Binance history error, falling back to Coinbase REST API:', err.message);
+      try {
+        const granularity = getCoinbaseGranularity(tf);
+        const coinbaseUrl = `https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=${granularity}`;
+        const resp = await axios.get(coinbaseUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        const candles = resp.data.map(c => ({
+          time: c[0],
+          low: c[1],
+          high: c[2],
+          open: c[3],
+          close: c[4],
+          volume: c[5]
+        })).sort((a, b) => a.time - b.time);
+        return res.json({ candles, mode: currentMode.toUpperCase() });
+      } catch (cbErr) {
+        console.error('Coinbase history fallback failed:', cbErr.message);
+        return res.json({ candles: [], error: cbErr.message });
+      }
     }
   }
 
