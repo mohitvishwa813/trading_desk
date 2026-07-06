@@ -11,6 +11,8 @@ RUN npm ci --only=production
 # Copy server-specific files
 COPY server.js ./
 COPY MarketDataFeed.proto ./
+COPY candleAggregator.js ./
+COPY serverStrategyRunner.js ./
 
 # Expose the backend port (3000)
 EXPOSE 3000
