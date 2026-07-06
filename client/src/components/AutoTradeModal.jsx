@@ -20,6 +20,7 @@ export default function AutoTradeModal({
   autoTradeState, // { active: boolean, mode: 'PAPER'|'LIVE', strategyId: string, qty: number, timeframe: string, startTime: string, endTime: string }
   onStartAutoTrade, // (config) => {}
   onStopAutoTrade, // () => {}
+  chartStyle = 'candles',
 }) {
   const [strategies, setStrategies] = useState([])
   const [selectedStrategy, setSelectedStrategy] = useState('')
@@ -81,7 +82,8 @@ export default function AutoTradeModal({
       timeframe,
       mode,
       startTime,
-      endTime
+      endTime,
+      candleStyle: chartStyle
     })
   }
 
@@ -114,11 +116,19 @@ export default function AutoTradeModal({
         {/* Modal Body */}
         <div className="p-5 space-y-4">
           {/* Active Symbol Display */}
-          <div className="bg-[#10121f] rounded-lg p-3 border border-[#1b1e2a] flex items-center justify-between">
-            <span className="text-[11px] text-[#808290] font-medium uppercase tracking-wider">Target Stock Symbol</span>
-            <span className="text-sm font-bold text-emerald-400 font-mono bg-emerald-950/20 px-2.5 py-0.5 rounded border border-emerald-500/20">
-              {activeSymbol || 'Select Symbol'}
-            </span>
+          <div className="bg-[#10121f] rounded-lg p-3 border border-[#1b1e2a] flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-[#808290] font-medium uppercase tracking-wider">Target Stock Symbol</span>
+              <span className="text-sm font-bold text-emerald-400 font-mono bg-emerald-950/20 px-2.5 py-0.5 rounded border border-emerald-500/20">
+                {activeSymbol || 'Select Symbol'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between border-t border-[#1b1e2a]/50 pt-2 mt-1">
+              <span className="text-[11px] text-[#808290] font-medium uppercase tracking-wider">Active Candle Style</span>
+              <span className="text-xs font-bold text-indigo-400 font-mono bg-indigo-950/20 px-2 py-0.5 rounded border border-indigo-500/20 capitalize">
+                {((autoTradeState?.active ? autoTradeState.candleStyle : chartStyle) || 'candles').replace('_', ' ')}
+              </span>
+            </div>
           </div>
 
           {/* Strategy Select */}

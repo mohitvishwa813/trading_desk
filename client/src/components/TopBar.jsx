@@ -28,12 +28,24 @@ export default function TopBar({
   autoTradeActive = false,
   onOpenAutoTradeSettings = () => {},
   onLogout,
+  onOpenStrategyGuide = () => {},
 }) {
+  // Clock state
   const [time, setTime] = useState(new Date().toLocaleTimeString())
+  const [profileOpen, setProfileOpen] = useState(false)
+
   useEffect(() => {
     const id = setInterval(() => setTime(new Date().toLocaleTimeString()), 1000)
     return () => clearInterval(id)
   }, [])
+
+  // Auto close profile dropdown on click outside
+  useEffect(() => {
+    if (!profileOpen) return
+    const handler = () => setProfileOpen(false)
+    window.addEventListener('click', handler)
+    return () => window.removeEventListener('click', handler)
+  }, [profileOpen])
 
   const layoutModes = [
     { id: 'single', label: '1', icon: null },
@@ -213,18 +225,57 @@ export default function TopBar({
       {/* Clock */}
       <div className="text-[10px] text-muted ml-2">{time}</div>
 
-      {/* Logout Button */}
-      {onLogout && (
+      {/* Profile Dropdown Trigger */}
+      <div className="relative ml-2">
         <button
-          onClick={onLogout}
-          title="Logout"
-          className="ml-3 p-1 rounded hover:bg-[#1f232e] text-[#9093a3] hover:text-[#ff4a4a] transition-all flex items-center justify-center outline-none"
+          onClick={(e) => {
+            e.stopPropagation()
+            setProfileOpen(!profileOpen)
+          }}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[11px] font-bold text-[#a9adc1] border border-border bg-[#151922] hover:bg-[#1a1f2b] transition-all outline-none"
         >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          <div className="w-4 h-4 rounded-full bg-[#7c6af7] text-white flex items-center justify-center text-[10px] font-extrabold uppercase">
+            U
+          </div>
+          <span>Profile</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-muted/60">
+            <polyline points="6 9 12 15 18 9" />
           </svg>
         </button>
-      )}
+
+        {profileOpen && (
+          <div className="absolute right-0 mt-1 w-44 bg-[#0a0d16] border border-[#222533] rounded shadow-2xl py-1 z-50 flex flex-col">
+            <button
+              onClick={() => {
+                setProfileOpen(false)
+                onOpenStrategyGuide()
+              }}
+              className="w-full text-left px-3.5 py-2 text-[11px] font-bold text-[#a9adc1] hover:text-white hover:bg-accent/10 transition-colors flex items-center gap-2"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+              </svg>
+              Strategy Guide
+            </button>
+            <div className="h-[1px] bg-[#1a1d2e] my-1" />
+            <button
+              onClick={() => {
+                setProfileOpen(false)
+                onLogout()
+              }}
+              className="w-full text-left px-3.5 py-2 text-[11px] font-bold text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors flex items-center gap-2"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+              </svg>
+              Logout
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

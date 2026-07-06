@@ -94,6 +94,7 @@ async function main() {
         last_signal_time INTEGER,
         created_at TEXT NOT NULL,
         stopped_at TEXT,
+        candle_style TEXT DEFAULT 'candles',
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
       );
     `);

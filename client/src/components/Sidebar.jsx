@@ -89,6 +89,22 @@ export default function Sidebar({
           )}
         </button>
 
+        {/* Log tab */}
+        <button
+          id="sidebar-tab-log"
+          onClick={() => switchTab('log')}
+          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${
+            activeTab === 'log'
+              ? 'text-accent'
+              : 'text-muted hover:text-[#e2e8f0]'
+          }`}
+        >
+          Log
+          {activeTab === 'log' && (
+            <span className="absolute bottom-0 left-0 w-full h-[2px] bg-accent rounded-full" />
+          )}
+        </button>
+
         {/* Collapse button */}
         <button
           id="sidebar-collapse-btn"
@@ -112,16 +128,19 @@ export default function Sidebar({
           <TradeTabContent
             activeSymbol={activeSymbol}
             price={price}
-            alerts={alerts}
-            webhookStatus={webhookStatus}
             onSendAlert={onSendAlert}
             prices={prices}
             tick={tick}
             instrumentKey={instrumentKey}
+          />
+        ) : activeTab === 'terminal' ? (
+          <StrategyEditor activeSymbol={activeSymbol} onStrategyResult={onStrategyResult} />
+        ) : (
+          <LogTabContent
+            alerts={alerts}
+            webhookStatus={webhookStatus}
             tradesRefreshKey={tradesRefreshKey}
           />
-        ) : (
-          <StrategyEditor activeSymbol={activeSymbol} onStrategyResult={onStrategyResult} />
         )}
       </div>
     </div>
@@ -131,14 +150,28 @@ export default function Sidebar({
 /* ================================================================== */
 /*  TRADE TAB — existing content                                        */
 /* ================================================================== */
-function TradeTabContent({ activeSymbol, price, alerts, webhookStatus, onSendAlert, prices, tick, instrumentKey, tradesRefreshKey }) {
+function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instrumentKey }) {
+  return (
+    <div className="flex flex-col min-h-0 flex-1 overflow-y-auto">
+      <TradingPanel
+        activeSymbol={activeSymbol}
+        price={price}
+        prices={prices}
+        tick={tick}
+        instrumentKey={instrumentKey}
+        onSendAlert={onSendAlert}
+      />
+    </div>
+  )
+}
+
+/* ================================================================== */
+/*  LOG TAB — Alert log & Webhook Logs                                  */
+/* ================================================================== */
+function LogTabContent({ alerts, webhookStatus, tradesRefreshKey }) {
   const [bottomTab, setBottomTab] = useState('alerts') // 'alerts' | 'journal'
-  const [bottomCollapsed, setBottomCollapsed] = useState(true)
   const [trades, setTrades] = useState([])
   const [tradesLoading, setTradesLoading] = useState(false)
-  const [bottomHeight, setBottomHeight] = useState(280) // px height of expanded log panel
-  const containerRef = useRef(null)
-  const isDragging = useRef(false)
 
   // Fetch trades from database
   useEffect(() => {
@@ -155,113 +188,39 @@ function TradeTabContent({ activeSymbol, price, alerts, webhookStatus, onSendAle
     }
   }, [bottomTab, tradesRefreshKey])
 
-  // Drag-to-resize handlers for bottom panel
-  const handleDragStart = useCallback((e) => {
-    e.preventDefault()
-    isDragging.current = true
-    document.body.style.cursor = 'row-resize'
-    document.body.style.userSelect = 'none'
-
-    const onMove = (ev) => {
-      if (!isDragging.current || !containerRef.current) return
-      const containerRect = containerRef.current.getBoundingClientRect()
-      const newHeight = containerRect.bottom - ev.clientY
-      const minH = 120
-      const maxH = containerRect.height - 100 // leave at least 100px for top
-      setBottomHeight(Math.max(minH, Math.min(maxH, newHeight)))
-    }
-
-    const onUp = () => {
-      isDragging.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }, [])
-
   return (
-    <div ref={containerRef} className="flex flex-col min-h-0 flex-1">
-
-      {/* ── Top: Trading form (scrolls dynamically based on collapse state) ── */}
-      <div 
-        className="overflow-y-auto flex-1 min-h-[80px]"
-      >
-        <TradingPanel
-          activeSymbol={activeSymbol}
-          price={price}
-          prices={prices}
-          tick={tick}
-          instrumentKey={instrumentKey}
-          onSendAlert={onSendAlert}
-        />
-      </div>
-
-      {/* ── Drag Handle (resize bar) ── */}
-      {!bottomCollapsed && (
-        <div
-          onMouseDown={handleDragStart}
-          className="shrink-0 flex items-center justify-center cursor-row-resize group border-t border-border hover:border-accent/60 transition-colors"
-          style={{ height: 7 }}
-          title="Drag to resize"
-        >
-          <div className="w-8 h-[3px] rounded-full bg-[#2a2e3e] group-hover:bg-accent/60 transition-colors" />
-        </div>
-      )}
-
-      {/* ── Bottom: Alert Log + Webhook (collapsible, resizable) ── */}
-      <div 
-        className={`flex flex-col ${bottomCollapsed ? 'shrink-0' : 'shrink-0 min-h-0'}`}
-        style={!bottomCollapsed ? { height: bottomHeight } : undefined}
-      >
-        {/* Sub-Tabs Selector */}
-        <div className="flex border-b border-border bg-[#0d0f14] shrink-0 items-center justify-between">
-          <div className="flex flex-1">
-            <button
-              onClick={() => { setBottomTab('alerts'); setBottomCollapsed(false); }}
-              className={`flex-1 py-2 text-[10px] font-bold tracking-widest uppercase border-r border-border transition-colors outline-none
-                ${bottomTab === 'alerts' && !bottomCollapsed ? 'text-accent bg-[#151922]' : 'text-muted hover:text-white bg-transparent'}
-              `}
-            >
-              Alert Log
-            </button>
-            <button
-              onClick={() => { setBottomTab('journal'); setBottomCollapsed(false); }}
-              className={`flex-1 py-2 text-[10px] font-bold tracking-widest uppercase border-r border-border transition-colors outline-none
-                ${bottomTab === 'journal' && !bottomCollapsed ? 'text-accent bg-[#151922]' : 'text-muted hover:text-white bg-transparent'}
-              `}
-            >
-              make.com logs
-            </button>
-          </div>
-          
+    <div className="flex flex-col min-h-0 flex-1 bg-surface h-full">
+      {/* Sub-Tabs Selector */}
+      <div className="flex border-b border-border bg-[#0d0f14] shrink-0 items-center justify-between">
+        <div className="flex flex-1">
           <button
-            onClick={() => setBottomCollapsed(prev => !prev)}
-            className="px-3 py-2 text-muted hover:text-white transition-colors outline-none border-l border-border"
-            title={bottomCollapsed ? "Expand Log Panel" : "Collapse Log Panel"}
+            onClick={() => setBottomTab('alerts')}
+            className={`flex-1 py-2 text-[10px] font-bold tracking-widest uppercase border-r border-border transition-colors outline-none
+              ${bottomTab === 'alerts' ? 'text-accent bg-[#151922]' : 'text-muted hover:text-white bg-transparent'}
+            `}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform duration-200 ${bottomCollapsed ? 'rotate-180' : ''}`}>
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
+            Alert Log
+          </button>
+          <button
+            onClick={() => setBottomTab('journal')}
+            className={`flex-1 py-2 text-[10px] font-bold tracking-widest uppercase transition-colors outline-none
+              ${bottomTab === 'journal' ? 'text-accent bg-[#151922]' : 'text-muted hover:text-white bg-transparent'}
+            `}
+          >
+            make.com logs
           </button>
         </div>
-
-        {/* Tab Content Area */}
-        {!bottomCollapsed && (
-          <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
-            {bottomTab === 'alerts' ? (
-              <AlertLog alerts={alerts} />
-            ) : (
-              <TradeJournal trades={trades} loading={tradesLoading} />
-            )}
-          </div>
-        )}
-        {!bottomCollapsed && <WebhookPanel status={webhookStatus} />}
       </div>
 
+      {/* Tab Content Area */}
+      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
+        {bottomTab === 'alerts' ? (
+          <AlertLog alerts={alerts} />
+        ) : (
+          <TradeJournal trades={trades} loading={tradesLoading} />
+        )}
+      </div>
+      <WebhookPanel status={webhookStatus} />
     </div>
   )
 }

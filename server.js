@@ -753,7 +753,7 @@ app.post('/api/paper/orders', authenticateToken, async (req, res) => {
 
 // POST /api/autotrade/start - Start auto trade session
 app.post('/api/autotrade/start', authenticateToken, async (req, res) => {
-  const { strategyId, symbol, qty, timeframe, mode, startTime, endTime } = req.body || {};
+  const { strategyId, symbol, qty, timeframe, mode, startTime, endTime, candleStyle } = req.body || {};
   if (!strategyId || !symbol || !qty || !timeframe || !mode) {
     return res.status(400).json({ error: 'Missing required parameters to start auto trade' });
   }
@@ -768,7 +768,7 @@ app.post('/api/autotrade/start', authenticateToken, async (req, res) => {
 
     // Insert new persistent configuration
     await db.execute({
-      sql: 'INSERT INTO auto_trades (id, user_id, strategy_id, symbol, qty, timeframe, mode, start_time, end_time, active, last_signal_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)',
+      sql: 'INSERT INTO auto_trades (id, user_id, strategy_id, symbol, qty, timeframe, mode, start_time, end_time, candle_style, active, last_signal_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)',
       args: [
         id,
         req.user.id,
@@ -779,6 +779,7 @@ app.post('/api/autotrade/start', authenticateToken, async (req, res) => {
         mode,
         startTime || '09:15',
         endTime || '15:30',
+        candleStyle || 'candles',
         new Date().toISOString()
       ]
     });
@@ -855,7 +856,8 @@ app.get('/api/autotrade/status', authenticateToken, async (req, res) => {
       timeframe: session.timeframe,
       mode: session.mode,
       startTime: session.start_time,
-      endTime: session.end_time
+      endTime: session.end_time,
+      candleStyle: session.candle_style
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -992,6 +994,34 @@ async function fetchCandlesInternal(symbol, tf) {
 // Map to track the active trade ID per auto trade session (for alert grouping)
 const sessionActiveTrades = {};
 
+function convertToHeikinAshi(candles) {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  const haCandles = [];
+  let prevOpen = candles[0].open;
+  let prevClose = candles[0].close;
+
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    const haClose = (c.open + c.high + c.low + c.close) / 4;
+    const haOpen = i === 0 ? (c.open + c.close) / 2 : (prevOpen + prevClose) / 2;
+    const haHigh = Math.max(c.high, haOpen, haClose);
+    const haLow = Math.min(c.low, haOpen, haClose);
+
+    haCandles.push({
+      time: c.time,
+      open: haOpen,
+      high: haHigh,
+      low: haLow,
+      close: haClose,
+      volume: c.volume
+    });
+
+    prevOpen = haOpen;
+    prevClose = haClose;
+  }
+  return haCandles;
+}
+
 // Background auto trade processing loop
 async function processAutoTrades() {
   try {
@@ -1018,8 +1048,12 @@ async function processAutoTrades() {
       const strat = stratResult.rows[0];
 
       // 3. Fetch history candles
-      const candles = await fetchCandlesInternal(session.symbol, session.timeframe);
+      let candles = await fetchCandlesInternal(session.symbol, session.timeframe);
       if (!Array.isArray(candles) || candles.length === 0) continue;
+
+      if (session.candle_style === 'heikin_ashi') {
+        candles = convertToHeikinAshi(candles);
+      }
 
       // 4. Run strategy code on server
       const result = serverStrategyRunner.run(candles, strat.code);

@@ -7,6 +7,7 @@ import TickerStrip from './components/TickerStrip'
 import Watchlist from './components/Watchlist'
 import OptionChain from './components/OptionChain'
 import AutoTradeModal from './components/AutoTradeModal'
+import StrategyGuideModal from './components/StrategyGuideModal'
 import { run } from './utils/strategyRunner'
 
 // ─── Login Screen Component (Glassmorphism & Rich Aesthetics) ────────────────
@@ -156,9 +157,11 @@ export default function App() {
   const chartStrategiesRef = useRef({})
   const chartTimeframesRef = useRef(chartTimeframes)
   const candlesMapRef = useRef(candlesMap)
+  const lastStrategyRunTimeRef = useRef({}) // chartIndex -> timestamp ms
 
   // ── Auto-trading state ──
   const [autoTradeModalOpen, setAutoTradeModalOpen] = useState(false)
+  const [strategyGuideOpen, setStrategyGuideOpen] = useState(false)
   const [autoTradeState, setAutoTradeState] = useState({
     active: false,
     mode: 'PAPER', // 'PAPER' | 'LIVE'
@@ -214,11 +217,19 @@ export default function App() {
             timeframe: data.timeframe,
             mode: data.mode,
             startTime: data.startTime,
-            endTime: data.endTime
+            endTime: data.endTime,
+            candleStyle: data.candleStyle
           })
 
-          // Sync chart timeframe & symbol to match active auto trade
+          // Sync chart timeframe, symbol & candle style to match active auto trade
           setChartTimeframes(prev => ({ ...prev, [focusedChart]: data.timeframe }))
+          if (data.candleStyle) {
+            setChartStyles(prev => {
+              const next = [...prev]
+              next[focusedChart] = data.candleStyle
+              return next
+            })
+          }
           setChartConfigs(prev => {
             const next = [...prev]
             const key = symbolMap[data.symbol.toUpperCase()] || data.symbol
@@ -234,19 +245,17 @@ export default function App() {
             .then(strat => {
               // Run strategy runner locally on whatever candles are currently loaded
               const currentCandles = candlesMap[focusedChart] || []
-              if (currentCandles.length > 0) {
-                const result = run(currentCandles, strat.code)
-                setChartStrategies(prev => ({
-                  ...prev,
-                  [focusedChart]: {
-                    ...result,
-                    strategyId: strat.id,
-                    strategyName: strat.name,
-                    code: strat.code,
-                    timeframe: data.timeframe
-                  }
-                }))
-              }
+              const result = currentCandles.length > 0 ? run(currentCandles, strat.code) : { signals: [], plots: [], lines: [], labels: [], dashboard: {} }
+              setChartStrategies(prev => ({
+                ...prev,
+                [focusedChart]: {
+                  ...result,
+                  strategyId: strat.id,
+                  strategyName: strat.name,
+                  code: strat.code,
+                  timeframe: data.timeframe
+                }
+              }))
             })
             .catch(() => {})
         }
@@ -669,18 +678,29 @@ export default function App() {
                   const updatedCandles = appendTickToCandles(currentCandles, data, currentTimeframes[idx] || '5m', config.symbol, config.instrumentKey)
                   nextMap[idx] = updatedCandles
 
-                  // Re-run active strategy if applied to this chart
+                  // Re-run active strategy if applied to this chart (with throttling to prevent lagging)
                   const activeStrat = currentStrategies[idx]
                   if (activeStrat && activeStrat.code) {
                     try {
-                      const result = run(updatedCandles, activeStrat.code)
-                      setChartStrategies(prevStrats => ({
-                        ...prevStrats,
-                        [idx]: {
-                          ...prevStrats[idx],
-                          ...result
-                        }
-                      }))
+                      const oldLastCandle = currentCandles[currentCandles.length - 1]
+                      const newLastCandle = updatedCandles[updatedCandles.length - 1]
+                      const isNewCandleBoundary = oldLastCandle && newLastCandle && (oldLastCandle.time !== newLastCandle.time)
+
+                      const nowMs = Date.now()
+                      const lastRunMs = lastStrategyRunTimeRef.current[idx] || 0
+                      const timeElapsed = nowMs - lastRunMs
+
+                      if (isNewCandleBoundary || timeElapsed >= 5000) {
+                        lastStrategyRunTimeRef.current[idx] = nowMs
+                        const result = run(updatedCandles, activeStrat.code)
+                        setChartStrategies(prevStrats => ({
+                          ...prevStrats,
+                          [idx]: {
+                            ...prevStrats[idx],
+                            ...result
+                          }
+                        }))
+                      }
                     } catch (err) {
                       console.error('Failed to run strategy on tick:', err)
                     }
@@ -900,7 +920,7 @@ export default function App() {
             setCandlesMap(prev => ({ ...prev, [i]: loadedCandles }))
 
             // If a strategy is applied, evaluate it on the loaded candles
-            const activeStrat = chartStrategies[i]
+            const activeStrat = chartStrategiesRef.current[i] || chartStrategies[i]
             if (activeStrat && activeStrat.code) {
               const result = run(loadedCandles, activeStrat.code)
               setChartStrategies(prevStrats => ({
@@ -964,6 +984,7 @@ export default function App() {
         activeSymbol={activeSymbol}
         onOpenSearch={() => { setSearchOpen(true); setSearchKey(k => k + 1) }}
         onLogout={handleLogout}
+        onOpenStrategyGuide={() => setStrategyGuideOpen(true)}
         // Layout
         layoutMode={layoutMode}
         onLayoutModeChange={setLayoutMode}
@@ -1135,6 +1156,7 @@ export default function App() {
         onClose={() => setAutoTradeModalOpen(false)}
         activeSymbol={activeSymbol}
         autoTradeState={autoTradeState}
+        chartStyle={chartStyles[focusedChart] || 'candles'}
         onStartAutoTrade={async (config) => {
           try {
             const token = localStorage.getItem('token')
@@ -1211,6 +1233,10 @@ export default function App() {
             console.error('Failed to stop auto trade:', err)
           }
         }}
+      />
+      <StrategyGuideModal
+        isOpen={strategyGuideOpen}
+        onClose={() => setStrategyGuideOpen(false)}
       />
     </div>
   )
