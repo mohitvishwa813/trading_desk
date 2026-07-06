@@ -53,6 +53,42 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
   const [syntaxErr, setSyntaxErr]     = useState(null)
   const [showNameEdit, setShowNameEdit] = useState(false)
   const [dirty, setDirty]             = useState(false)
+  const [outputHeight, setOutputHeight] = useState(180)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const isResizingRef = useRef(false)
+
+  const handleMouseDown = (e) => {
+    isResizingRef.current = true
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizingRef.current) return
+      const outputEl = outputRef.current
+      if (outputEl) {
+        const rect = outputEl.getBoundingClientRect()
+        const newHeight = rect.bottom - e.clientY
+        if (newHeight > 80 && newHeight < 550) {
+          setOutputHeight(newHeight)
+        }
+      }
+    }
+
+    const handleMouseUp = () => {
+      isResizingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [])
 
   const outputRef   = useRef(null)
   const debounceRef = useRef(null)
@@ -116,13 +152,19 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
       const result = run(aggregated, code)
       setLogs(result.logs)
       setStats(result.stats)
-      onStrategyResult(result)
+      onStrategyResult({
+        ...result,
+        strategyId: currentId,
+        strategyName: currentName || 'Custom Strategy',
+        code,
+        timeframe: tf
+      })
     } catch (err) {
       setLogs([`[ERROR] ${err.message}`])
     } finally {
       setRunning(false)
     }
-  }, [activeSymbol, tf, code, onStrategyResult])
+  }, [activeSymbol, tf, code, onStrategyResult, currentId, currentName])
 
   // ── Clear signals ────────────────────────────────────────────────────────────
   const clearSignals = useCallback(() => {
@@ -202,6 +244,10 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
 
   // ── Tab key in editor ────────────────────────────────────────────────────────
   const handleKeyDown = (e) => {
+    if (e.key === 'Escape' && isFullscreen) {
+      e.preventDefault()
+      setIsFullscreen(false)
+    }
     if (e.key === 'Tab') {
       e.preventDefault()
       const el = e.target
@@ -244,6 +290,15 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
           className="shrink-0 px-1.5 py-1 rounded text-[10px] text-muted hover:text-[#e2e8f0] bg-[#1a1d24] border border-border hover:border-accent transition-colors"
         >+ New</button>
 
+        {/* Wide Code Editor Overlay Toggle */}
+        <button
+          onClick={() => setIsFullscreen(true)}
+          title="Open Wide Code Editor"
+          className="shrink-0 px-1.5 py-1 rounded text-[10px] text-muted hover:text-[#e2e8f0] bg-[#1a1d24] border border-border hover:border-accent transition-colors flex items-center gap-1"
+        >
+          <span>⛶</span> Wide
+        </button>
+
         {/* Save */}
         <button
           id="strategy-save-btn"
@@ -278,7 +333,7 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
       </div>
 
       {/* ── Code Editor ── */}
-      <div className="relative flex-shrink-0" style={{ minHeight: 200, maxHeight: '45%' }}>
+      <div className="relative flex-1 min-h-[120px]">
         <textarea
           id="strategy-code-editor"
           value={code}
@@ -289,8 +344,7 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
           autoCorrect="off"
           className="w-full h-full resize-none bg-[#080a0e] text-[#e2e8f0] px-3 py-3 focus:outline-none leading-relaxed"
           style={{
-            minHeight: 200,
-            maxHeight: '45vh',
+            height: '100%',
             fontFamily: "'JetBrains Mono','Fira Code','Cascadia Code','Consolas',monospace",
             fontSize: 11.5,
             lineHeight: 1.7,
@@ -319,15 +373,15 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
           id="strategy-run-btn"
           onClick={runStrategy}
           disabled={running || !!syntaxErr}
-          title="Run on chart (Shift+Enter)"
+          title="Add to Chart (Shift+Enter)"
           className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-bold text-white bg-accent hover:opacity-85 disabled:opacity-40 transition-opacity"
         >
           {running ? (
             <svg width="10" height="10" viewBox="0 0 10 10" className="animate-spin">
               <circle cx="5" cy="5" r="4" stroke="white" strokeWidth="1.5" fill="none" strokeDasharray="14" strokeDashoffset="7"/>
             </svg>
-          ) : '▶'}
-          Run
+          ) : '➕'}
+          Add to Chart
         </button>
 
         <button
@@ -368,15 +422,29 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
         </div>
       )}
 
+      {/* Drag Resize Handle Divider */}
+      <div 
+        onMouseDown={handleMouseDown}
+        className="h-1.5 bg-[#141822] shrink-0 cursor-row-resize hover:bg-accent/40 active:bg-accent transition-colors flex items-center justify-center border-t border-b border-border/20"
+        title="Drag to resize console output"
+      >
+        <div className="w-6 h-[2px] bg-[#3a3a3a] rounded" />
+      </div>
+
       {/* ── Output Log ── */}
       <div
         ref={outputRef}
         id="strategy-output"
-        className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5 bg-[#060810] min-h-[100px]"
-        style={{ fontFamily: "'JetBrains Mono','Fira Code','Consolas',monospace", fontSize: 10.5 }}
+        className="overflow-y-auto px-2 py-2 space-y-0.5 bg-[#060810]"
+        style={{ 
+          fontFamily: "'JetBrains Mono','Fira Code','Consolas',monospace", 
+          fontSize: 10.5,
+          height: outputHeight,
+          flexShrink: 0
+        }}
       >
         {logs.length === 0 && (
-          <div className="text-muted italic text-[11px] pt-1">Run a strategy to see output here.</div>
+          <div className="text-muted italic text-[11px] pt-1">Add a strategy to chart to see output here.</div>
         )}
         {logs.map((line, i) => (
           <LogLine key={i} line={line} />
@@ -385,9 +453,100 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
 
       {/* ── Footer hint ── */}
       <div className="shrink-0 flex items-center justify-between px-3 py-1 border-t border-border bg-[#0d0f14]">
-        <span className="text-[9px] text-muted">Shift+Enter to run · Tab to indent</span>
+        <span className="text-[9px] text-muted">Shift+Enter to add to chart · Tab to indent</span>
         <span className="text-[9px] text-muted">{logs.length} lines</span>
       </div>
+
+      {/* ── Wide Code Editor Overlay ── */}
+      {isFullscreen && (
+        <div 
+          className="fixed inset-y-0 right-0 z-50 bg-[#080a0e] border-l border-border flex flex-col shadow-2xl animate-in slide-in-from-right duration-200" 
+          style={{ width: 'min(85vw, 750px)' }}
+        >
+          {/* Header */}
+          <div className="shrink-0 flex items-center justify-between px-4 py-3 bg-[#0d0f14] border-b border-border">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-white uppercase tracking-wider">Wide Editor</span>
+              <span className="text-[10px] text-muted">— {currentName}{dirty ? ' *' : ''}</span>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { saveStrategy() }}
+                className={`px-3 py-1 rounded text-[11px] font-bold border transition-colors ${
+                  dirty ? 'text-white bg-accent border-accent' : 'text-muted bg-[#1a1d24] border-border hover:border-accent hover:text-white'
+                }`}
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setIsFullscreen(false)}
+                className="p-1 text-muted hover:text-white transition-colors"
+                title="Close Wide Editor"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Strategy Name Edit */}
+          <div className="shrink-0 flex items-center px-4 py-2 border-b border-border bg-[#080a0e]">
+            <input
+              type="text"
+              value={currentName}
+              onChange={e => { setCurrentName(e.target.value); setDirty(true) }}
+              className="flex-1 bg-transparent text-xs text-[#94a3b8] focus:text-[#e2e8f0] focus:outline-none"
+              placeholder="Strategy name…"
+            />
+            {dirty && <span className="text-[10px] text-amber-400">unsaved changes</span>}
+          </div>
+
+          {/* Editor Area */}
+          <div className="relative flex-1 min-h-0 bg-[#080a0e]">
+            <textarea
+              value={code}
+              onChange={handleCodeChange}
+              onKeyDown={handleKeyDown}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              className="w-full h-full resize-none bg-transparent text-[#e2e8f0] px-6 py-4 focus:outline-none leading-relaxed"
+              style={{
+                fontFamily: "'JetBrains Mono','Fira Code','Cascadia Code','Consolas',monospace",
+                fontSize: 12.5,
+                lineHeight: 1.8,
+                tabSize: 2,
+                caretColor: '#7c6af7',
+              }}
+            />
+            {/* Syntax error banner inside Wide Editor */}
+            {syntaxErr && (
+              <div className="absolute bottom-0 left-0 right-0 flex items-center gap-1.5 px-6 py-2.5 bg-red-950/90 border-t border-red-800/50 text-xs text-red-300">
+                <svg width="14" height="14" viewBox="0 0 12 12" fill="none" className="shrink-0">
+                  <circle cx="6" cy="6" r="5.5" stroke="currentColor" strokeWidth="1"/>
+                  <path d="M6 3.5v3M6 8v.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+                {syntaxErr.line ? `Line ${syntaxErr.line}: ` : ''}{syntaxErr.error}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="shrink-0 flex items-center justify-between px-4 py-2 border-t border-border bg-[#0d0f14]">
+            <button
+              onClick={() => { runStrategy(); setIsFullscreen(false); }}
+              disabled={running || !!syntaxErr}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold text-white bg-accent hover:opacity-85 disabled:opacity-40 transition-opacity"
+            >
+              Run &amp; Close
+            </button>
+            <span className="text-[10px] text-muted">Press Esc to close editor · Tab to indent</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -24,6 +24,10 @@ export default function TopBar({
   // Style (Stitched next to Option Chain)
   chartStyle,
   onChartStyleChange,
+  // Auto Trade
+  autoTradeActive = false,
+  onOpenAutoTradeSettings = () => {},
+  onLogout,
 }) {
   const [time, setTime] = useState(new Date().toLocaleTimeString())
   useEffect(() => {
@@ -118,6 +122,23 @@ export default function TopBar({
         WL
       </button>
 
+      {/* Auto Trade Trigger */}
+      <button
+        onClick={onOpenAutoTradeSettings}
+        className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+          autoTradeActive
+            ? 'bg-emerald-950/40 text-emerald-400 border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.2)] animate-pulse'
+            : 'bg-transparent text-muted border-border hover:border-accent/50 hover:text-white'
+        }`}
+        aria-label="Auto Trade Settings"
+      >
+        <span className={`w-1.5 h-1.5 rounded-full ${autoTradeActive ? 'bg-emerald-400' : 'bg-muted/60'}`} />
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+        </svg>
+        Auto Trade
+      </button>
+
       {/* Replay Controls */}
       {replayState?.active && (
         <div className="flex items-center gap-1 border border-yellow/30 rounded px-2 py-0.5 ml-1 bg-yellow/5">
@@ -191,6 +212,19 @@ export default function TopBar({
 
       {/* Clock */}
       <div className="text-[10px] text-muted ml-2">{time}</div>
+
+      {/* Logout Button */}
+      {onLogout && (
+        <button
+          onClick={onLogout}
+          title="Logout"
+          className="ml-3 p-1 rounded hover:bg-[#1f232e] text-[#9093a3] hover:text-[#ff4a4a] transition-all flex items-center justify-center outline-none"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+        </button>
+      )}
     </div>
   )
 }

@@ -77,6 +77,7 @@ The `ta` library contains popular technical analysis indicators. Each function r
 | `ta.supertrend`| `(factor, period)` | `[value[], direction[]]` | SuperTrend indicator band and trend direction (+1/-1) |
 | `ta.stoch` | `(kPeriod, dPeriod)` | `[k[], d[]]` | Stochastic Oscillator %K and %D lines |
 | `ta.adx` | `(period)` | `number[]` | Welles Wilder's Average Directional Index |
+| `ta.requestHigherTF` | `(symbol, timeframe, seriesFn)` | `any[]` | Fetches/interpolates higher timeframe indicators (e.g. Daily RSI on 5m chart) |
 
 #### Trend Crossover Checkers:
 * `ta.crossover(arrayA, arrayB, i)`: Returns `true` if `arrayA` crossed above `arrayB` at index `i`.
@@ -85,46 +86,52 @@ The `ta` library contains popular technical analysis indicators. Each function r
 ---
 
 ### 3. Execution Commands (`strategy` Namespace)
-Call these functions inside loops to issue trading signals. Each signal records a trade that will render on the chart.
+Call these functions inside loops to issue trading signals and check active positions.
 
-* `strategy.buy(barIndex, label)`: Places a **BUY** marker (green arrow up ▲ below candle).
-* `strategy.sell(barIndex, label)`: Places a **SELL** marker (red arrow down ▼ above candle).
-* `strategy.close(barIndex, label)`: Places a **CLOSE** marker (gray circle ◆ on candle).
-* `strategy.alert(condition, message, barIndex?)`: Triggers an alert when `condition` is true. Logs to output and updates the Alert Log.
+#### Position Tracker variables:
+* `strategy.position.size`: Current position quantity (positive for Long, negative for Short, `0` for Flat).
+* `strategy.position.avgPrice`: Average entry price of the active position.
+* `strategy.position.pnl`: Unrealized Profit & Loss calculated dynamically based on current bar prices.
+* `strategy.equity`: Running equity curve value starting at baseline `100,000` capital.
+
+#### Trading Signals:
+* `strategy.buy(barIndex, label, options?)`: Places a **BUY** order.
+  - `options`: `{ qty: number, style: 'arrow'|'label-box', icon: 'check'|'circle'|'none', bgColor: hexString, textColor: hexString, position: 'above'|'below' }`
+  - *Example:* `strategy.buy(i, "Long Entry", { qty: 5, style: "label-box", bgColor: "#00c853" })`
+* `strategy.sell(barIndex, label, options?)`: Places a **SELL** order.
+  - `options` are identical to `strategy.buy`.
+  - *Example:* `strategy.sell(i, "Short Entry", { qty: 5, style: "label-box", bgColor: "#ef5350" })`
+* `strategy.close(barIndex, label)`: Closes the active position immediately at the closing price.
+* `strategy.exit(barIndex, { sl: price, tp: price })`: Registers automated Stop Loss (SL) and Take Profit (TP) target levels for the current position.
+* `strategy.trailingStop({ trailPercent: number, id: string })`: Registers a dynamic trailing stop that trails the highest high (or lowest low) and triggers a position exit on violation.
+* `strategy.alert(condition, options)`: Triggers alerts.
+  - `options`: `{ id: string, message: string, level: 'info'|'warning'|'critical', once: boolean, liveOnly: boolean, webhook: string }`
+  - Supports template placeholders: `{{close}}`, `{{open}}`, `{{high}}`, `{{low}}`, `{{time}}`
+  - *Example:* `strategy.alert(close[i] > 65000, { id: "alert1", message: "Price crossed 65k at {{close}}", level: "critical" })`
 
 ---
 
-### 4. Custom Plotting
-Draw values on the main chart area for verification.
-* `plot(seriesArray, label, colorHex)`: Draws a line chart.
+### 4. Custom Plotting & Drawings (`chart` Namespace)
+Draw lines, custom markers, and indicators directly on the chart canvas.
+
+* `plot(seriesArray, label, colorHex)`: Draws an indicator line.
   - *Example:* `plot(ma50, "MA 50", "#2962FF")`
-
----
-
-### 5. Custom Drawings & Labels (`chart` Namespace)
-Draw lines and text labels directly onto the chart overlay.
-
 * `chart.drawLine(id, x1, y1, x2, y2, options)`: Draws a line segment from `(x1, y1)` to `(x2, y2)`.
-  - `id` (string): Unique identifier. Redrawing updates the line rather than duplicating it.
-  - `x1`, `x2` (number): Bar index or timestamp.
-  - `y1`, `y2` (number): Price levels.
-  - `options` (object): `{ color, width, style: 'solid'|'dashed', extendRight: boolean }`.
-* `chart.drawLabel(id, x, y, text, options)`: Renders text relative to coordinate `(x, y)`.
-  - `id` (string): Unique identifier.
-  - `x` (number): Bar index or timestamp.
-  - `y` (number): Price level.
-  - `text` (string): Display text.
-  - `options` (object): `{ color, textColor, position: 'left'|'right'|'above'|'below' }`.
+  - `options`: `{ color, width, style: 'solid'|'dashed', extendRight: boolean }`
+* `chart.drawLabel(id, x, y, text, options)`: Renders text at `(x, y)` coordinates.
+* `chart.priceLine(id, price, options)`: Renders a horizontal price line across the chart, extending to the right scale with a colored tag.
+  - `options`: `{ label, color, lineStyle: 'solid'|'dashed'|'dotted', labelBg, labelTextColor, extendRight: boolean }`
+  - *Example:* `chart.priceLine("EntryLine", 63200, { label: "ENTRY: 63200", color: "#00c853" })`
+* `chart.marker(barIndex, options)`: Places a small indicator shape at a specific candle.
+  - `options`: `{ shape: 'arrow-up'|'arrow-down'|'arrow-left'|'arrow-right', color, size: 'small'|'medium'|'large', position: 'above'|'below' }`
 
 ---
 
-### 6. Performance Dashboard (`dashboard` Namespace)
-Renders a custom stats summary panel in the top-right corner of the chart area.
+### 5. Performance Dashboard (`dashboard` Namespace)
+Renders custom backtest statistics in the top-right corner of the chart area.
 
 * `dashboard.set(rowLabel, value, colorHex)`: Sets a row metric.
-  - `rowLabel` (string): Metric title (e.g., `"Win Rate"`).
-  - `value` (string/number): Display value (e.g., `"71.4%"`).
-  - `colorHex` (string): Hex color code for the value.
+  - *Example:* `dashboard.set("Win Rate", "71.4%", "#00c853")`
 
 ---
 
@@ -165,60 +172,20 @@ Here is how a new developer can get started in 2 minutes:
    ```js
    const fast = ta.ema(close, 9)
    const slow = ta.ema(close, 21)
-   
 
    for (let i = 21; i < bars.length; i++) {
      if (ta.crossover(fast, slow, i)) {
-       strategy.buy(i, 'Golden Cross')
+       strategy.buy(i, 'Golden Cross', { qty: 2, style: 'label-box' })
      }
      if (ta.crossunder(fast, slow, i)) {
-       strategy.sell(i, 'Death Cross')
+       strategy.sell(i, 'Death Cross', { qty: 2, style: 'label-box' })
      }
    }
 
    plot(fast, 'EMA 9', '#00ff88')
    plot(slow, 'EMA 21', '#ff0055')
    ```
-5. **Run the Backtest:** Click **▶ Run** (or press `Shift + Enter`).
+5. **Run the Backtest:** Click **Add to Chart** (or press `Shift + Enter`).
    - The stats bar will update with backtesting results.
    - Buy/Sell arrows and lines will overlay on your active chart.
 6. **Save Your Strategy:** Click **Save**. The strategy code is now saved inside `strategies.json`.
-
----
-
-## 💡 Templates & Examples
-
-### Template A: RSI Overbought/Oversold Reversal
-```js
-const rsi = ta.rsi(close, 14)
-
-for (let i = 14; i < bars.length; i++) {
-  // Buy when RSI crosses above oversold line (30)
-  if (rsi[i-1] <= 30 && rsi[i] > 30) {
-    strategy.buy(i, 'RSI Buy')
-  }
-  // Sell when RSI crosses below overbought line (70)
-  if (rsi[i-1] >= 70 && rsi[i] < 70) {
-    strategy.sell(i, 'RSI Sell')
-  }
-}
-```
-
-### Template B: Bollinger Bands Mean Reversion
-```js
-const [upper, middle, lower] = ta.bb(close, 20, 2)
-
-for (let i = 20; i < bars.length; i++) {
-  // Buy when price hits or crosses below the lower band
-  if (close[i] <= lower[i]) {
-    strategy.buy(i, 'BB Lower Touch')
-  }
-  // Sell when price hits or crosses above the upper band
-  if (close[i] >= upper[i]) {
-    strategy.sell(i, 'BB Upper Touch')
-  }
-}
-
-plot(upper, 'BB Upper', '#e06b6b')
-plot(lower, 'BB Lower', '#6bbf6b')
-```

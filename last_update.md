@@ -1,170 +1,112 @@
 # Last Update — Project Status
 
-**Date:** Sunday, June 28, 2026 *(Updated: synced with codebase)*
+**Date:** Saturday, July 4, 2026 *(Updated: Database, Auth, Geoblock & Journaling Integration)*
 
 ---
 
 ## Project
-Upstox Live Trading Dashboard — Real-time Indian stock & crude oil chart dashboard with strategy alerts sent to Make.com via webhook.
+Upstox Live Trading Dashboard — Real-time Indian stock & crude oil chart dashboard with strategy alerts sent to Make.com via webhook. Now fully secured with JWT authentication, Turso DB persistence, and Coinbase fallbacks for US/EU deployments.
 
 ---
 
 ## Goal
-Convert the static HTML dashboard to a React + Tailwind CSS application and fix all data pipeline issues (WebSocket V3 protobuf, history API, timeframe aggregation).
+Migrate filesystem storage to a Turso SQLite database, add secure user sign-in (JWT + Bcrypt), implement geoblock-free BTCUSD data fallbacks, and build a Live Trade Journal updated by Make.com workflows.
 
 ---
 
 ## Stack
 - **Frontend:** React 18 + Vite 6 + Tailwind CSS 3 + lightweight-charts 4.1.3
-- **Backend:** Node.js + Express + WebSocket (ws) + protobufjs
-- **API:** Upstox V3 feed (protobuf) + V2 historical candles
-- **Alerts:** Make.com webhook integration
-- **Port:** 3000 (serves both API/WS and built React frontend)
+- **Backend:** Node.js + Express + WebSocket (ws) + protobufjs + jsonwebtoken + bcryptjs
+- **Database:** Turso (LibSQL client) SQLite cloud database
+- **API:** Upstox V3 feed (protobuf) + V2 historical candles + Coinbase (candles/WS fallback)
+- **Alerts:** Make.com webhook integration + Trade execution updates webhook
 
 ---
 
 ## Instruments
-| Display Name | Exchange | Instrument Key |
-|---|---|---|
-| NIFTY50 | NSE Index | `NSE_INDEX\|Nifty 50` |
-| BANKNIFTY | NSE Index | `NSE_INDEX\|Nifty Bank` |
-| RELIANCE | NSE Equity | `NSE_EQ\|INE002A01018` |
-| TCS | NSE Equity | `NSE_EQ\|INE467B01029` |
-| HDFC BANK | NSE Equity | `NSE_EQ\|INE040A01034` |
-| CRUDE OIL | MCX Futures | `MCX_FO\|CRUDEOIL` |
+| Display Name | Exchange | Instrument Key | Data Source |
+|---|---|---|---|
+| NIFTY50 | NSE Index | `NSE_INDEX\|Nifty 50` | Upstox |
+| BANKNIFTY | NSE Index | `NSE_INDEX\|Nifty Bank` | Upstox |
+| RELIANCE | NSE Equity | `NSE_EQ\|INE002A01018` | Upstox |
+| TCS | NSE Equity | `NSE_EQ\|INE467B01029` | Upstox |
+| HDFC BANK | NSE Equity | `NSE_EQ\|INE040A01034` | Upstox |
+| CRUDE OIL | MCX Futures | `MCX_FO\|CRUDEOIL` | Upstox |
+| BTCUSD | Crypto | `BINANCE\|BTCUSD` | Coinbase (US/EU Fallback) / Binance |
 
 ---
 
 ## Features
-- **LIVE/DEMO toggle** — Server-side demo tick generation; switching to live clears prices
-- **Real-time ticks** — Upstox V3 WebSocket with protobuf decoding pushed to browser
-- **Historical candles** — V3 intraday fallback → V2 1min (5-day) → demo synthetic
-- **Timeframe aggregation** — `aggregateCandles()` buckets 1min data into 5m, 15m, 1h, 1d
-- **12 chart styles** — Candles, Hollow, Volume, Heikin Ashi, Bars, Line, Line+Markers, Step Line, Area, HLC Area, Baseline, Columns
-- **Multi-chart layouts** — Single, Side-by-side, Stacked, Grid (2×2)
-- **Ticker strip** — Watchlist items, color-coded P&L, click to switch
-- **Resizable right sidebar** — Collapsible (double-click splitter), persisted in localStorage
-- **Vertical price scale zoom** — Scroll over Y-axis stretches/compresses candles only
-- **Volume panel removed** — Candle chart uses full chart height
-- **Drawing tools** — Trend Line, Horizontal/Vertical Line, Ray, Rectangle, Fibonacci, Text Label, Eraser
-- **Indicators** — SMA, EMA, VWAP, ATR, SuperTrend, RSI, Stochastic, MACD, Bollinger Bands, OBV, Volume MA
-- **Replay mode** — Step through historical candle data
-- **Context menu** — Right-click reset chart
-- **Watchlist panel** — Add/remove symbols, auto-populates first 6 from instrument list
-- **Option Chain panel** — CE/PE grouped by strike, live LTP via Greeks subscription, quick buy
-- **Order placement** — Place real BUY/SELL orders via Upstox V2 API (MIS/CNC, MARKET/LIMIT/SL)
-- **Search modal** — Debounced search with category filtering (Index/EQ/Futures/Options), exchange/type/expiry filters, default query "NIFTY50"
-- **Auto-select NIFTY** — On symbol map load, picks NIFTY (exact match first, then prefix)
-- **Scroll wheel zoom** — Native lightweight-charts zoom (UP=zoom IN, DOWN=zoom OUT)
-- **Symbol persistence** — Per-chart symbol saved across page reloads
-- **Manual signals** — BUY/SELL/INFO buttons send alerts to Make.com
-- **Strategies** — Manual, EMA Crossover, RSI Threshold, Price Breakout, Custom Note
-- **Alert log** — Scrollable log with color-coded entries
-- **Webhook status** — Shows last webhook send result
-- **No TradingView logo** — `attributionLogo: false`
+- **Security & JWT Auth** — Secure login screen (no open signup) blocking unauthorized terminal access. All API endpoints and WebSocket upgrades verified using JWT tokens.
+- **Turso DB Migration** — Relocated strategy storage from `strategies.json` to Turso SQLite. Includes `migrate.js` script to bootstrap schema and seed 44 mock entries.
+- **Coinbase Geoblock Fallback** — When deployed in geoblocked container environments (like US-based Railway servers), Binance requests fail with HTTP 451. The server automatically falls back to Coinbase REST API and WebSockets for `BTCUSD` ticks.
+- **Make.com Webhook Integration** — Route `/api/webhook/trade` validates incoming Make.com payloads via static secret tokens and records trade logs inside the DB.
+- **Live Trade Journal** — A tabbed panel in the Sidebar Trade tab switcher displaying open and closed positions, entry/exit prices, and real-time realized P&L, synchronized instantly via WebSocket events.
+- **Upstox WS Handshake Auth** — Appends `Authorization: Bearer <TOKEN>` in the WebSocket constructor parameters to prevent `403 Forbidden` handshake rejections on production servers.
+- **CORS Middleware** — Supports credentials and dynamically matches origins to allow seamless access from Vercel preview/production links (`*.vercel.app`) and localhost.
 
 ---
 
 ## File Structure
 ```
 upstox-dashboard/
-├── server.js                   ← Express + WebSocket + Upstox V3/V2 + demo mode
+├── server.js                   ← Express + LibSQL + JWT + Webhook + Geoblock fallback
 ├── MarketDataFeed.proto        ← Upstox V3 protobuf schema
-├── .env                        ← Tokens (ACCESS_TOKEN, MAKE_WEBHOOK_URL, PORT)
-├── package.json                ← Root: scripts (start, dev, build:client, dev:client)
+├── .env                        ← Tokens (UPSTOX_ACCESS_TOKEN, TURSO_DB_URL, JWT_SECRET)
+├── package.json                ← Backend dependencies (@libsql/client, bcryptjs, jwt)
 ├── README.md                   ← Original static HTML docs
 ├── last_update.md              ← THIS FILE
-├── public/                     ← (Legacy static HTML — unused by React build)
+└── scripts/
+    └── migrate.js              ← Database schema creation and mock data seeder
 └── client/
-    ├── package.json            ← React 18, lightweight-charts 4.1.3, Tailwind 3, Vite 6
-    ├── vite.config.js          ← Vite config with /api proxy to port 3000
-    ├── tailwind.config.js      ← Custom colors (surface, border, accent, green, red, yellow, muted)
-    ├── index.html              ← Entry HTML
-    └── src/
-        ├── App.jsx             ← Root: WS connect, mode toggle, state management
-        ├── index.css           ← Tailwind directives + base styles
-        ├── components/
-    │   ├── TopBar.jsx      ← LIVE/DEMO buttons, active symbol, layout switcher, watchlist toggle
-    │   ├── TickerStrip.jsx ← Horizontal price strip with P&L coloring
-    │   ├── ChartPanel.jsx  ← lightweight-charts with candles, indicators, drawings, replay
-    │   ├── Sidebar.jsx     ← Trading panel, strategy runner, webhook log
-    │   ├── TradingPanel.jsx ← Order form, strategy config, signal buttons
-    │   ├── DrawingTools.jsx ← Left-side tool strip (Trend Line, Fib, etc.)
-    │   ├── CandleSelector.jsx ← Chart style picker dropdown
-    │   ├── Watchlist.jsx  ← Left-side watchlist panel with add/remove
-    │   ├── SymbolSearch.jsx ← Modal search with NIFTY50 default and category filter
-    │   └── OptionChain.jsx ← CE/PE strikes grouped by expiry, live LTP, quick buy
-        └── dist/               ← Built frontend (served by server.js)
+    ├── .env                    ← Client configuration (VITE_API_URL)
+    ├── package.json            ← React, lightweight-charts, Tailwind
+    ├── src/
+        ├── main.jsx            ← Global fetch interceptor for URL prefixing and JWT injection
+        ├── App.jsx             ← Login screen routing, WS auth query params, state triggers
+        └── components/
+            ├── TopBar.jsx      ← Layout, style picker, watchlist toggles, and logout trigger
+            ├── Sidebar.jsx     ← TradingPanel, AlertLog, and TradeJournal switcher
 ```
 
 ---
 
 ## Key Technical Decisions
-1. **WebSocket V3 protobuf** — Upstox V3 uses binary protobuf exclusively; decoded server-side with `MarketDataFeed.proto` and rebroadcast as JSON to browsers
-2. **V2 historical API** — V3 intraday endpoint returned empty data for indices; V2 `GET /v2/historical-candle/{key}/{interval}/{to}/{from}` returns real data
-3. **Demo mode server-side** — Server runs `setInterval` generating synthetic ticks; toggled via `POST /api/mode`
-4. **lightweight-charts v4.1.3** — Pinned to v4 (not v5) because v5 renamed `addCandlestickSeries()` to `addSeries(SeriesType, options)`
-5. **Direct WS in dev** — Dev mode connects to `localhost:3000` directly (not through Vite proxy) because Vite can't proxy root WebSocket upgrades
-6. **Custom wheel handler** — `handleScale.mouseWheel: false`; custom handler detects cursor over right price scale → vertical-only zoom (scaleMargins), over chart area → both axes
-7. **Resizable sidebar** — Splitter div with `cursor-col-resize`, `mousedown`/`touchstart` drag, double-click collapse/expand, width/state persisted in `localStorage`
-8. **NIFTY50 default search** — SymbolSearch uses initial query `NIFTY50` + `key` prop remount to avoid race conditions
-9. **Auto-select "NIFTY"** — After instrument map loads, picks exact "NIFTY" → first "NIFTY…" prefix → first key as default chart symbol
-10. **Option Chain + Greeks** — Option chain endpoint groups CE/PE by strike from dynamic instrument JSON; WebSocket subscribes with `mode: 'option_greeks'` for live delta/gamma/theta/vega
-11. **Order placement** — `POST /api/order` proxies to Upstox V2 `/v2/order/place` with MIS/CNC product, MARKET/LIMIT/SL order types, DAY validity
-12. **Instrument search** — Server-side filtering by exchange, instrument type prefix (`OPT`/`FUT`/`EQ`/`INDEX`), expiry date, and query text; sorted by category → expiry → strike
-13. **Option_key detection** — `isOptionKey()` checks instrument_type for `CE`/`PE` or falls back to `_FO|` pattern in key string
-14. **Subscribe_options WS message** — Browser sends `{ type: 'subscribe_options', keys: [...] }` to swap option keys (old removed, new added) in the Upstox feed
+1. **Global Fetch Interception** — Prepared `client/src/main.jsx` window override that injects the authorization token from localStorage into all HTTP headers and handles CORS path mapping dynamically.
+2. **WebSocket Upgrade Authorization** — The backend interceptor parses the WebSocket request URL query parameter `?token=...` and verifies it via `jwt.verify` at the HTTP upgrade handshake level.
+3. **Make.com Token Verification** — Trade execution webhooks are secured using the `X-Webhook-Token` header matched against `MAKE_WEBHOOK_SECRET` in `.env`.
+4. **Tabbed Sidebar Layout** — Implemented tab toggles in the Trade Tab to easily switch between the Alert Log and the Trade Journal.
+5. **Seeder Script** — Formulated programmatic generators to populate exactly 44 high-fidelity dummy entries in each table to verify list rendering, pagination, and layout.
 
 ---
 
 ## How to Run
 ```bash
-cd upstox-dashboard
+# 1. Setup Environment
+# Fill TURSO_DB_URL, TURSO_DB_TOKEN, and JWT_SECRET in root .env
+
+# 2. Run Database Migration and Seeding
+node scripts/migrate.js
+
+# 3. Build & Run Application
 npm install
-cd client && npm install && cd ..
-# Set .env values
+cd client && npm install && npm run build && cd ..
 npm start
-# Open http://localhost:3000
 ```
 
 ---
 
-## Deployment
-- Build client: `npm run build:client` (runs `cd client && npm run build`)
-- Start: `npm start` (serves both API/WS on port 3000 + `client/dist/` static files)
-- SPA catch-all: any non-API route serves `client/dist/index.html`
-
----
-
 ## API Endpoints
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/mode` | Get current mode (`live` or `demo`) |
-| POST | `/api/mode` | Set mode (`{ mode: 'live' | 'demo' }`) |
-| GET | `/api/history/:symbol` | Get historical OHLC candles |
-| POST | `/api/alert` | Send strategy alert to Make.com |
-| GET | `/api/instruments/symbols` | Get symbol → instrument_key map |
-| GET | `/api/instruments/search` | Search instruments by query, exchange, type, expiry |
-| GET | `/api/optionchain/check/:symbol` | Check if options exist for underlying |
-| GET | `/api/optionchain/:underlying/expiries` | List available expiry dates |
-| GET | `/api/optionchain/:underlying/:expiry` | Full option chain (CE/PE grouped by strike) |
-| POST | `/api/order` | Place order via Upstox V2 API |
-
----
-
-## Status
-- WebSocket: Connected to Upstox V3 feed (auto-reconnect every 5s on failure)
-- History: V2 API returns real candles from last trading day
-- Demo mode: Synthetic ticks generated at 1s interval with random walks
-- **Fixed LIVE mode data not updating charts** — root cause was `subscribedKeys.clear()` on mode switch to LIVE (server.js:753 removed). Now keys persist across mode toggles; frontend re-subscribes on `mode_change` WS event.
-- Token valid until June 2027
-- Volume panel removed — candle chart uses full height
-- Vertical price scale zoom via custom wheel handler (price scale only: scaleMargins, chart area: both axes)
-
----
-
-## Notes
-- Upstox WebSocket uses `full` mode (includes daily OHLC, volume, etc.)
-- Protobuf decoder falls back through `ltpc` → `fullFeed.marketFF.ltpc` / `fullFeed.indexFF.ltpc` → `firstLevelWithGreeks.ltpc`
-- `aggregateCandles()` buckets by `Math.floor(time / tfSec) * tfSec` — works for any timeframe multiple of 1 minute
-- `/api/history/:symbol` uses first available: V3 intraday → V2 1min → demo synthetic → empty array
+| Method | Path | Auth Required | Description |
+|---|---|---|---|
+| POST | `/api/auth/login` | No | Authenticate user and issue JWT token |
+| GET | `/api/mode` | Yes | Get current mode (`live` or `demo`) |
+| POST | `/api/mode` | Yes | Switch mode |
+| GET | `/api/history/:symbol` | Yes | Get historical candles (Coinbase/Upstox) |
+| GET | `/api/strategies` | Yes | List strategies for authenticated user |
+| GET | `/api/strategies/:id` | Yes | Fetch full code for a strategy |
+| POST | `/api/strategies` | Yes | Create or update strategy |
+| DELETE | `/api/strategies/:id` | Yes | Remove strategy |
+| POST | `/api/webhook/trade` | Static Token | Webhook update called by Make.com |
+| GET | `/api/trades` | Yes | Fetch trade log history from DB |
+| POST | `/api/order` | Yes | Place order on Upstox broker |

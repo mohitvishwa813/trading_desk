@@ -7,9 +7,39 @@ const protobuf = require('protobufjs');
 const https = require('https');
 const { createGunzip } = require('zlib');
 const fs = require('fs');
+const { aggregateCandles } = require('./candleAggregator');
+const serverStrategyRunner = require('./serverStrategyRunner');
 
 const app = express();
 const cors = require('cors');
+const { createClient } = require('@libsql/client');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+
+const db = createClient({
+  url: process.env.TURSO_DB_URL || 'file:local.db',
+  authToken: process.env.TURSO_DB_TOKEN || 'dummy'
+});
+
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_key_12345';
+const MAKE_WEBHOOK_SECRET = process.env.MAKE_WEBHOOK_SECRET || 'fallback_webhook_secret_12345';
+
+// JWT Authentication Middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    req.user = user;
+    next();
+  });
+}
+
 app.use(cors({
   origin: function (origin, callback) {
     callback(null, true);
@@ -215,10 +245,10 @@ function connectCoinbase() {
             symbol: 'BTCUSD',
             ltp: price,
             timestamp: msg.time ? new Date(msg.time).getTime() : Date.now(),
-            open: price,
-            high: price,
-            low: price,
-            close: price,
+            open: parseFloat(msg.open_24h || price),
+            high: parseFloat(msg.high_24h || price),
+            low: parseFloat(msg.low_24h || price),
+            close: parseFloat(msg.open_24h || price),
             volume: parseFloat(msg.volume_24h || 0),
             mode: currentMode.toUpperCase(),
           };
@@ -491,7 +521,7 @@ function broadcast(msg) {
 // ─── REST Endpoints ──────────────────────────────────────────────────────────
 
 // Send alert to Make.com
-app.post('/api/alert', async (req, res) => {
+app.post('/api/alert', authenticateToken, async (req, res) => {
   const { symbol, strategy, price, signal, message } = req.body;
 
   if (!MAKE_WEBHOOK_URL || MAKE_WEBHOOK_URL.includes('YOUR_WEBHOOK')) {
@@ -516,60 +546,739 @@ app.post('/api/alert', async (req, res) => {
   }
 });
 
-// ─── Strategy CRUD ────────────────────────────────────────────────────────────
-const STRATEGIES_FILE = path.join(__dirname, 'strategies.json');
+// Get historical alerts from DB or alerts.json
+app.get('/api/alerts', authenticateToken, async (req, res) => {
+  const alertsPath = path.join(__dirname, 'alerts.json');
+  if (fs.existsSync(alertsPath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(alertsPath, 'utf8'));
+      const mapped = data.map(item => ({
+        signal: item.level ? item.level.toUpperCase() : 'INFO',
+        symbol: item.strategyName,
+        message: item.message,
+        tradeId: item.tradeId || null,
+        timestamp: new Date(item.time * 1000).toISOString()
+      }));
+      return res.json(mapped);
+    } catch (e) {
+      // fallback to DB if file reading fails
+    }
+  }
 
-function loadStrategies() {
   try {
-    if (!fs.existsSync(STRATEGIES_FILE)) return [];
-    return JSON.parse(fs.readFileSync(STRATEGIES_FILE, 'utf8'));
-  } catch { return []; }
+    const result = await db.execute({
+      sql: 'SELECT symbol, message, price, trade_id, created_at FROM alerts WHERE user_id = ? ORDER BY created_at DESC LIMIT 50',
+      args: [req.user.id]
+    });
+    const mapped = result.rows.map(row => {
+      const msgLower = row.message.toLowerCase();
+      let signal = 'INFO';
+      if (msgLower.includes('buy')) signal = 'BUY';
+      else if (msgLower.includes('sell')) signal = 'SELL';
+      else if (msgLower.includes('sl') || msgLower.includes('stop loss')) signal = 'SELL';
+      else if (msgLower.includes('tp') || msgLower.includes('target')) signal = 'BUY';
+      
+      const hasPrice = row.message.includes('₹') || row.message.includes('@ ');
+      return {
+        signal,
+        symbol: row.symbol,
+        message: hasPrice ? row.message : `${row.message} @ ${row.price}`,
+        tradeId: row.trade_id || null,
+        timestamp: row.created_at
+      };
+    });
+    res.json(mapped);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/alerts/trigger - forward alert to webhook and store in alerts.json
+app.post('/api/alerts/trigger', authenticateToken, async (req, res) => {
+  const { id, message, level, time, price, strategyName, tradeId, webhook } = req.body || {};
+  
+  const alertObj = {
+    id: id || `alert_${Date.now()}`,
+    message: message || '',
+    level: level || 'info',
+    time: time || Math.floor(Date.now() / 1000),
+    price: price || 0,
+    strategyName: strategyName || 'Default Strategy',
+    tradeId: tradeId || null,
+    triggered: true
+  };
+
+  try {
+    // 1. Save to database alerts table
+    await db.execute({
+      sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      args: [
+        alertObj.id,
+        req.user.id,
+        strategyName || 'Unknown',
+        alertObj.message,
+        alertObj.price,
+        alertObj.tradeId,
+        new Date(alertObj.time * 1000).toISOString()
+      ]
+    });
+
+    // 2. Append to alerts.json file on the server
+    const alertsPath = path.join(__dirname, 'alerts.json');
+    let existingAlerts = [];
+    if (fs.existsSync(alertsPath)) {
+      try {
+        existingAlerts = JSON.parse(fs.readFileSync(alertsPath, 'utf8'));
+      } catch (e) {
+        existingAlerts = [];
+      }
+    }
+    existingAlerts.unshift(alertObj);
+    if (existingAlerts.length > 500) {
+      existingAlerts = existingAlerts.slice(0, 500);
+    }
+    fs.writeFileSync(alertsPath, JSON.stringify(existingAlerts, null, 2), 'utf8');
+
+    // 3. Forward to external webhook if provided
+    const targetWebhook = webhook || process.env.DISCORD_TELEGRAM_WEBHOOK_URL;
+    if (targetWebhook && targetWebhook.startsWith('http')) {
+      axios.post(targetWebhook, { content: `[${alertObj.level.toUpperCase()}] ${alertObj.strategyName}: ${alertObj.message}` })
+        .catch(err => console.error('Webhook forward failed:', err.message));
+    }
+
+    res.json({ success: true, alert: alertObj });
+  } catch (err) {
+    console.error('Trigger alert error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/paper/trades - Fetch paper trade logs
+app.get('/api/paper/trades', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT * FROM paper_trades WHERE user_id = ? ORDER BY created_at DESC LIMIT 100',
+      args: [req.user.id]
+    });
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/paper/orders - Place a new paper trade order
+app.post('/api/paper/orders', authenticateToken, async (req, res) => {
+  const { symbol, direction, qty, price, comment } = req.body || {};
+  if (!symbol || !direction || !qty || !price) {
+    return res.status(400).json({ error: 'Missing symbol, direction, qty, or price' });
+  }
+
+  try {
+    const oppDir = direction.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+    const openResult = await db.execute({
+      sql: 'SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND direction = ? AND status = ? ORDER BY created_at ASC LIMIT 1',
+      args: [req.user.id, symbol, oppDir, 'OPEN']
+    });
+
+    let assignedTradeId = `pt_${Date.now()}`;
+
+    if (openResult.rows.length > 0) {
+      const activeTrade = openResult.rows[0];
+      assignedTradeId = activeTrade.id;
+      const oldPrice = activeTrade.price;
+      const newPrice = price;
+      const closedQty = Math.min(qty, activeTrade.qty);
+      let tradePnl = 0;
+
+      if (activeTrade.direction === 'BUY') {
+        tradePnl = (newPrice - oldPrice) * closedQty;
+      } else {
+        tradePnl = (oldPrice - newPrice) * closedQty;
+      }
+
+      if (qty >= activeTrade.qty) {
+        // Close full trade
+        await db.execute({
+          sql: 'UPDATE paper_trades SET status = ?, pnl = ?, closed_at = ?, comment = ? WHERE id = ?',
+          args: ['CLOSED', tradePnl, new Date().toISOString(), comment || 'Closed by opposite order', activeTrade.id]
+        });
+
+        if (qty > activeTrade.qty) {
+          // Open remainder position
+          const remainder = qty - activeTrade.qty;
+          const remainderId = `pt_${Date.now()}`;
+          await db.execute({
+            sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            args: [remainderId, req.user.id, symbol, direction.toUpperCase(), remainder, price, 'OPEN', new Date().toISOString(), 'Remainder position']
+          });
+        }
+      } else {
+        // Partial close
+        const remainingQty = activeTrade.qty - qty;
+        await db.execute({
+          sql: 'UPDATE paper_trades SET qty = ? WHERE id = ?',
+          args: [remainingQty, activeTrade.id]
+        });
+
+        const closedId = `pt_partial_${Date.now()}`;
+        await db.execute({
+          sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, pnl, created_at, closed_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          args: [closedId, req.user.id, symbol, activeTrade.direction, qty, activeTrade.price, 'CLOSED', tradePnl, activeTrade.created_at, new Date().toISOString(), 'Partially closed']
+        });
+      }
+    } else {
+      // Open new position
+      await db.execute({
+        sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        args: [assignedTradeId, req.user.id, symbol, direction.toUpperCase(), qty, price, 'OPEN', new Date().toISOString(), comment || 'Open position']
+      });
+    }
+
+    // Log corresponding alert
+    const alertId = `a_pt_${Date.now()}`;
+    const alertMsg = `[Paper ${direction.toUpperCase()}] ${qty} units of ${symbol} at ₹${price}`;
+    await db.execute({
+      sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      args: [alertId, req.user.id, symbol, alertMsg, price, assignedTradeId, new Date().toISOString()]
+    });
+
+    res.json({ success: true, tradeId: assignedTradeId });
+  } catch (err) {
+    console.error('Order placement error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Server-Side Auto Trade API Endpoints ────────────────────────────────────
+
+// POST /api/autotrade/start - Start auto trade session
+app.post('/api/autotrade/start', authenticateToken, async (req, res) => {
+  const { strategyId, symbol, qty, timeframe, mode, startTime, endTime } = req.body || {};
+  if (!strategyId || !symbol || !qty || !timeframe || !mode) {
+    return res.status(400).json({ error: 'Missing required parameters to start auto trade' });
+  }
+
+  try {
+    const id = `session_${Date.now()}`;
+    // Deactivate previous active configurations
+    await db.execute({
+      sql: 'UPDATE auto_trades SET active = 0, stopped_at = ? WHERE user_id = ? AND active = 1',
+      args: [new Date().toISOString(), req.user.id]
+    });
+
+    // Insert new persistent configuration
+    await db.execute({
+      sql: 'INSERT INTO auto_trades (id, user_id, strategy_id, symbol, qty, timeframe, mode, start_time, end_time, active, last_signal_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)',
+      args: [
+        id,
+        req.user.id,
+        strategyId,
+        symbol,
+        qty,
+        timeframe,
+        mode,
+        startTime || '09:15',
+        endTime || '15:30',
+        new Date().toISOString()
+      ]
+    });
+
+    // Log corresponding alert
+    const alertId = `a_at_start_${Date.now()}`;
+    const alertMsg = `[Auto Trade Active] Monitoring ${symbol} on ${timeframe} with ${mode} execution.`;
+    await db.execute({
+      sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+      args: [alertId, req.user.id, symbol, alertMsg, id, new Date().toISOString()]
+    });
+
+    res.json({ success: true, sessionId: id });
+  } catch (err) {
+    console.error('AutoTrade start error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/autotrade/stop - Stop auto trade session
+app.post('/api/autotrade/stop', authenticateToken, async (req, res) => {
+  try {
+    const activeResult = await db.execute({
+      sql: 'SELECT * FROM auto_trades WHERE user_id = ? AND active = 1 LIMIT 1',
+      args: [req.user.id]
+    });
+
+    if (activeResult.rows.length === 0) {
+      return res.json({ success: true, message: 'No active session to stop' });
+    }
+
+    const session = activeResult.rows[0];
+    const stoppedAt = new Date().toISOString();
+
+    await db.execute({
+      sql: 'UPDATE auto_trades SET active = 0, stopped_at = ? WHERE id = ?',
+      args: [stoppedAt, session.id]
+    });
+
+    // Log corresponding stopped alert
+    const alertId = `a_at_stop_${Date.now()}`;
+    const alertMsg = `[Auto Trade Stopped] Trading sequence deactivated.`;
+    await db.execute({
+      sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+      args: [alertId, req.user.id, session.symbol, alertMsg, session.id, stoppedAt]
+    });
+
+    res.json({ success: true, sessionId: session.id });
+  } catch (err) {
+    console.error('AutoTrade stop error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/autotrade/status - Get current active auto trade session
+app.get('/api/autotrade/status', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT * FROM auto_trades WHERE user_id = ? AND active = 1 LIMIT 1',
+      args: [req.user.id]
+    });
+
+    if (result.rows.length === 0) {
+      return res.json({ active: false });
+    }
+
+    const session = result.rows[0];
+    res.json({
+      active: true,
+      sessionId: session.id,
+      strategyId: session.strategy_id,
+      symbol: session.symbol,
+      qty: session.qty,
+      timeframe: session.timeframe,
+      mode: session.mode,
+      startTime: session.start_time,
+      endTime: session.end_time
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Server-Side Persistent Auto-Trading Engine ──────────────────────────────
+
+// Helper function to fetch candles internally matching endpoint logic
+async function fetchCandlesInternal(symbol, tf) {
+  let cleanSymbol = symbol.toUpperCase().replace(/[\s_-]/g, '');
+  if (cleanSymbol === 'NIFTY50') cleanSymbol = 'NIFTY';
+  if (cleanSymbol === 'STATEBANK' || cleanSymbol === 'STATEBANKOFINDIA') cleanSymbol = 'SBIN';
+
+  const instrumentKey = symbolToKey[cleanSymbol] || symbolToKey[symbol.toUpperCase()] || symbol;
+
+  const getCoinbaseGranularity = (tframe) => {
+    switch (tframe) {
+      case '1m': return 60;
+      case '3m': return 60;
+      case '5m': return 300;
+      case '10m': return 300;
+      case '15m': return 900;
+      case '30m': return 1800;
+      case '1h': return 3600;
+      case '2h': return 3600;
+      case '4h': return 3600;
+      case '1d': return 86400;
+      default: return 60;
+    }
+  };
+
+  // BTCUSD Binance / Coinbase fallback
+  if (symbol.toUpperCase() === 'BTCUSD' || instrumentKey === 'BINANCE|BTCUSD') {
+    try {
+      const bInterval = getBinanceInterval(tf);
+      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${bInterval}&limit=1000`;
+      const resp = await axios.get(binanceUrl);
+      return resp.data.map(c => ({
+        time: Math.floor(c[0] / 1000),
+        open: parseFloat(c[1]),
+        high: parseFloat(c[2]),
+        low: parseFloat(c[3]),
+        close: parseFloat(c[4]),
+        volume: parseFloat(c[5])
+      }));
+    } catch (err) {
+      try {
+        const granularity = getCoinbaseGranularity(tf);
+        const coinbaseUrl = `https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=${granularity}`;
+        const resp = await axios.get(coinbaseUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        return resp.data.map(c => ({
+          time: c[0],
+          low: c[1],
+          high: c[2],
+          open: c[3],
+          close: c[4],
+          volume: c[5]
+        })).sort((a, b) => a.time - b.time);
+      } catch (cbErr) {
+        console.error('fetchCandlesInternal BTC fallback failed:', cbErr.message);
+        return [];
+      }
+    }
+  }
+
+  if (!ACCESS_TOKEN || ACCESS_TOKEN === 'YOUR_UPSTOX_ACCESS_TOKEN_HERE') {
+    return [];
+  }
+
+  try {
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+
+    const allCandles = [];
+    let currentStart = new Date(startDate);
+
+    while (currentStart < endDate) {
+      const currentEnd = new Date(Math.min(currentStart.getTime() + 30 * 86400000, endDate.getTime()));
+      const toStr = currentEnd.toISOString().split('T')[0];
+      const fromStr = currentStart.toISOString().split('T')[0];
+
+      try {
+        const v3Url = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(instrumentKey)}/1minute/${toStr}/${fromStr}`;
+        const v3Resp = await axios.get(v3Url, {
+          headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
+        });
+        allCandles.push(...(v3Resp.data?.data?.candles || []));
+      } catch (v3Err) {
+        try {
+          const v2Url = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/1minute/${toStr}/${fromStr}`;
+          const v2Resp = await axios.get(v2Url, {
+            headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
+          });
+          allCandles.push(...(v2Resp.data?.data?.candles || []));
+        } catch (v2Err) {
+          // silent error
+        }
+      }
+      currentStart = new Date(currentEnd);
+    }
+
+    try {
+      const intradayUrl = `https://api.upstox.com/v2/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/1minute`;
+      const intraResp = await axios.get(intradayUrl, {
+        headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, Accept: 'application/json' }
+      });
+      allCandles.push(...(intraResp.data?.data?.candles || []));
+    } catch (intraErr) {}
+
+    if (allCandles.length) {
+      const seen = new Set();
+      const candles = allCandles
+        .map(c => ({
+          time: Math.floor(new Date(c[0]).getTime() / 1000),
+          open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5]
+        }))
+        .filter(c => {
+          if (seen.has(c.time)) return false;
+          seen.add(c.time);
+          return true;
+        })
+        .sort((a, b) => a.time - b.time);
+
+      return aggregateCandles(candles, tf, symbol, instrumentKey);
+    }
+  } catch (err) {
+    console.error('fetchCandlesInternal Upstox failed:', err.message);
+  }
+  return [];
 }
 
-function saveStrategies(list) {
-  fs.writeFileSync(STRATEGIES_FILE, JSON.stringify(list, null, 2), 'utf8');
+// Map to track the active trade ID per auto trade session (for alert grouping)
+const sessionActiveTrades = {};
+
+// Background auto trade processing loop
+async function processAutoTrades() {
+  try {
+    const activeResult = await db.execute('SELECT * FROM auto_trades WHERE active = 1');
+    if (activeResult.rows.length === 0) return;
+
+    for (const session of activeResult.rows) {
+      // 1. Time Window check
+      const now = new Date();
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const currentTimeStr = `${hours}:${minutes}`;
+
+      if (currentTimeStr < session.start_time || currentTimeStr > session.end_time) {
+        continue; // skip
+      }
+
+      // 2. Fetch strategy details
+      const stratResult = await db.execute({
+        sql: 'SELECT code, name FROM strategies WHERE id = ?',
+        args: [session.strategy_id]
+      });
+      if (stratResult.rows.length === 0) continue;
+      const strat = stratResult.rows[0];
+
+      // 3. Fetch history candles
+      const candles = await fetchCandlesInternal(session.symbol, session.timeframe);
+      if (!Array.isArray(candles) || candles.length === 0) continue;
+
+      // 4. Run strategy code on server
+      const result = serverStrategyRunner.run(candles, strat.code);
+
+      // 5. Check latest signal
+      if (result.signals && result.signals.length > 0) {
+        const latestSignal = result.signals[result.signals.length - 1];
+        const lastCandleTime = candles[candles.length - 1].time;
+
+        // Signal must be fresh and not executed yet
+        if (latestSignal.time >= lastCandleTime - 120 && session.last_signal_time !== latestSignal.time) {
+          const side = latestSignal.type.toUpperCase();
+          const executionPrice = latestSignal.price || candles[candles.length - 1].close;
+
+          console.log(`[Server AutoTrade] Triggering ${side} signal for ${session.symbol} in session ${session.id}`);
+
+          // Track or generate trade ID for grouping
+          let assignedTradeId = sessionActiveTrades[session.id];
+          if (!assignedTradeId) {
+            assignedTradeId = `tr_${Date.now()}`;
+            sessionActiveTrades[session.id] = assignedTradeId;
+          }
+
+          // If the signal is a close, clear the active trade mapping after logging
+          const isCloseSignal = side === 'CLOSE' || side === 'EXIT';
+
+          if (session.mode === 'PAPER') {
+            const oppDir = side === 'BUY' ? 'SELL' : 'BUY';
+            const openResult = await db.execute({
+              sql: 'SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND direction = ? AND status = ? ORDER BY created_at ASC LIMIT 1',
+              args: [session.user_id, session.symbol, oppDir, 'OPEN']
+            });
+
+            if (openResult.rows.length > 0) {
+              const activeTrade = openResult.rows[0];
+              // Link alerts to the original opening trade ID for grouping
+              assignedTradeId = activeTrade.id;
+              const oldPrice = activeTrade.price;
+              const closedQty = Math.min(session.qty, activeTrade.qty);
+              let tradePnl = activeTrade.direction === 'BUY' ? (executionPrice - oldPrice) * closedQty : (oldPrice - executionPrice) * closedQty;
+
+              if (session.qty >= activeTrade.qty) {
+                await db.execute({
+                  sql: 'UPDATE paper_trades SET status = ?, pnl = ?, closed_at = ?, comment = ? WHERE id = ?',
+                  args: ['CLOSED', tradePnl, new Date().toISOString(), `Auto Trade closed via: ${strat.name}`, activeTrade.id]
+                });
+
+                if (session.qty > activeTrade.qty) {
+                  const remainder = session.qty - activeTrade.qty;
+                  const remainderId = `pt_${Date.now()}`;
+                  sessionActiveTrades[session.id] = remainderId; // new trade group for remainder
+                  await db.execute({
+                    sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    args: [remainderId, session.user_id, session.symbol, side, remainder, executionPrice, 'OPEN', new Date().toISOString(), 'Remainder position']
+                  });
+                } else {
+                  delete sessionActiveTrades[session.id]; // position fully closed
+                }
+              } else {
+                const remainingQty = activeTrade.qty - session.qty;
+                await db.execute({
+                  sql: 'UPDATE paper_trades SET qty = ? WHERE id = ?',
+                  args: [remainingQty, activeTrade.id]
+                });
+
+                const closedId = `pt_partial_${Date.now()}`;
+                await db.execute({
+                  sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, pnl, created_at, closed_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                  args: [closedId, session.user_id, session.symbol, activeTrade.direction, session.qty, activeTrade.price, 'CLOSED', tradePnl, activeTrade.created_at, new Date().toISOString(), 'Partially closed']
+                });
+              }
+            } else {
+              // Open new position
+              const newPositionId = `pt_${Date.now()}`;
+              assignedTradeId = newPositionId;
+              sessionActiveTrades[session.id] = newPositionId;
+
+              await db.execute({
+                sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                args: [newPositionId, session.user_id, session.symbol, side, session.qty, executionPrice, 'OPEN', new Date().toISOString(), `Auto Trade opened via: ${strat.name}`]
+              });
+            }
+
+            // Log corresponding alert
+            const alertId = `a_pt_${Date.now()}`;
+            const alertMsg = `[Paper ${side}] ${session.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
+            await db.execute({
+              sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
+            });
+          } else {
+            // Live webhook
+            const targetWebhook = process.env.DISCORD_TELEGRAM_WEBHOOK_URL || MAKE_WEBHOOK_URL;
+            const alertMsg = `[Live ${side}] ${session.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
+
+            if (targetWebhook && targetWebhook.startsWith('http')) {
+              await axios.post(targetWebhook, { content: `[LIVE AUTO] ${strat.name}: ${alertMsg}` })
+                .catch(err => console.error('Discord/Telegram webhook failed:', err.message));
+            }
+
+            const alertId = `a_live_${Date.now()}`;
+            await db.execute({
+              sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
+            });
+
+            if (isCloseSignal) {
+              delete sessionActiveTrades[session.id];
+            }
+          }
+
+          // Update execution state in DB
+          await db.execute({
+            sql: 'UPDATE auto_trades SET last_signal_time = ? WHERE id = ?',
+            args: [latestSignal.time, session.id]
+          });
+
+          // Broadcast update to all client UI instances
+          const updateMsg = JSON.stringify({ type: 'autotrade_update', symbol: session.symbol });
+          for (const client of browserClients) {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(updateMsg);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error in processAutoTrades:', err.message);
+  }
 }
+
+// Start Background Engine Loop (runs every 15 seconds)
+setInterval(processAutoTrades, 15000);
+
+// ─── Strategy CRUD ────────────────────────────────────────────────────────────
+// ─── Authentication API ───────────────────────────────────────────────────────
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    const result = await db.execute({
+      sql: 'SELECT * FROM users WHERE email = ?',
+      args: [email]
+    });
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const user = result.rows[0];
+    const passwordMatch = bcrypt.compareSync(password, user.password_hash);
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Sign token (valid 7 days)
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ success: true, token, user: { id: user.id, email: user.email } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Strategy CRUD (Turso DB) ─────────────────────────────────────────────────
 
 // List all strategies
-app.get('/api/strategies', (req, res) => {
-  const list = loadStrategies().map(({ id, name, updatedAt }) => ({ id, name, updatedAt }));
-  res.json(list);
+app.get('/api/strategies', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT id, name, updated_at FROM strategies WHERE user_id = ? ORDER BY updated_at DESC',
+      args: [req.user.id]
+    });
+    const list = result.rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      updatedAt: row.updated_at
+    }));
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Get one strategy (with full code)
-app.get('/api/strategies/:id', (req, res) => {
-  const list = loadStrategies();
-  const s = list.find(x => x.id === req.params.id);
-  if (!s) return res.status(404).json({ error: 'Not found' });
-  res.json(s);
+app.get('/api/strategies/:id', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT id, name, code, created_at, updated_at FROM strategies WHERE id = ? AND user_id = ?',
+      args: [req.params.id, req.user.id]
+    });
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    const row = result.rows[0];
+    res.json({
+      id: row.id,
+      name: row.name,
+      code: row.code,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Create or update a strategy
-app.post('/api/strategies', (req, res) => {
+app.post('/api/strategies', authenticateToken, async (req, res) => {
   const { id, name, code } = req.body || {};
   if (!name || !code) return res.status(400).json({ error: 'name and code required' });
-  const list = loadStrategies();
   const now = new Date().toISOString();
-  const existing = id ? list.findIndex(x => x.id === id) : -1;
-  if (existing >= 0) {
-    list[existing] = { ...list[existing], name, code, updatedAt: now };
-    saveStrategies(list);
-    return res.json(list[existing]);
+
+  try {
+    if (id) {
+      // Update
+      const check = await db.execute({
+        sql: 'SELECT id FROM strategies WHERE id = ? AND user_id = ?',
+        args: [id, req.user.id]
+      });
+      if (check.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+
+      await db.execute({
+        sql: 'UPDATE strategies SET name = ?, code = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        args: [name, code, now, id, req.user.id]
+      });
+      return res.json({ id, name, code, updatedAt: now });
+    }
+
+    // Insert
+    const newId = `s_${Date.now()}`;
+    await db.execute({
+      sql: 'INSERT INTO strategies (id, user_id, name, code, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      args: [newId, req.user.id, name, code, now, now]
+    });
+    res.json({ id: newId, name, code, createdAt: now, updatedAt: now });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  const newStrategy = { id: `s_${Date.now()}`, name, code, createdAt: now, updatedAt: now };
-  list.push(newStrategy);
-  saveStrategies(list);
-  res.json(newStrategy);
 });
 
 // Delete a strategy
-app.delete('/api/strategies/:id', (req, res) => {
-  let list = loadStrategies();
-  const before = list.length;
-  list = list.filter(x => x.id !== req.params.id);
-  if (list.length === before) return res.status(404).json({ error: 'Not found' });
-  saveStrategies(list);
-  res.json({ success: true });
+app.delete('/api/strategies/:id', authenticateToken, async (req, res) => {
+  try {
+    const check = await db.execute({
+      sql: 'SELECT id FROM strategies WHERE id = ? AND user_id = ?',
+      args: [req.params.id, req.user.id]
+    });
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+
+    await db.execute({
+      sql: 'DELETE FROM strategies WHERE id = ? AND user_id = ?',
+      args: [req.params.id, req.user.id]
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 function getBinanceInterval(tf) {
@@ -609,7 +1318,7 @@ function getUpstoxInterval(tf) {
 }
 
 // Get historical OHLC for chart init
-app.get('/api/history/:symbol', async (req, res) => {
+app.get('/api/history/:symbol', authenticateToken, async (req, res) => {
   const { symbol } = req.params;
   const tf = req.query.tf || '1m';
 
@@ -767,7 +1476,8 @@ app.get('/api/history/:symbol', async (req, res) => {
       })
       .sort((a, b) => a.time - b.time);
 
-    return res.json({ candles, mode: 'LIVE' });
+    const aggregated = aggregateCandles(candles, tf, symbol, instrumentKey);
+    return res.json({ candles: aggregated, mode: 'LIVE' });
   }
 
   // No candles from API — only generate demo data when explicitly in demo mode
@@ -804,13 +1514,13 @@ app.get('/api/history/:symbol', async (req, res) => {
 
 // ─── Symbols Map Endpoint ───────────────────────────────────────────────────
 
-app.get('/api/instruments/symbols', (req, res) => {
+app.get('/api/instruments/symbols', authenticateToken, (req, res) => {
   res.json(symbolToKey);
 });
 
 // ─── Instrument Search Endpoint ─────────────────────────────────────────────
 
-app.get('/api/instruments/search', (req, res) => {
+app.get('/api/instruments/search', authenticateToken, (req, res) => {
   const { q, exchange, type, expiry } = req.query;
   let results = instrumentsList;
 
@@ -943,15 +1653,14 @@ function optionMatchesUnderlying(inst, searchTerm) {
   return false;
 }
 
-// GET /api/optionchain/check/:symbol — check if options exist for this underlying
-app.get('/api/optionchain/check/:symbol', (req, res) => {
+app.get('/api/optionchain/check/:symbol', authenticateToken, (req, res) => {
   const { symbol } = req.params;
   const hasOptions = instrumentsList.some(inst => optionMatchesUnderlying(inst, symbol));
   res.json({ hasOptions });
 });
 
 // GET /api/optionchain/:underlying/expiries — list available expiry dates
-app.get('/api/optionchain/:underlying/expiries', (req, res) => {
+app.get('/api/optionchain/:underlying/expiries', authenticateToken, (req, res) => {
   const { underlying } = req.params;
   const expiries = new Set();
   for (const inst of instrumentsList) {
@@ -964,7 +1673,7 @@ app.get('/api/optionchain/:underlying/expiries', (req, res) => {
 });
 
 // GET /api/optionchain/:underlying/:expiry — full option chain for a given expiry
-app.get('/api/optionchain/:underlying/:expiry', (req, res) => {
+app.get('/api/optionchain/:underlying/:expiry', authenticateToken, (req, res) => {
   const { underlying, expiry } = req.params;
 
   const options = instrumentsList.filter(inst => {
@@ -996,9 +1705,71 @@ app.get('/api/optionchain/:underlying/:expiry', (req, res) => {
   res.json({ chain, underlying: underlying.toUpperCase(), expiry });
 });
 
+// ─── Webhook & Trades endpoints (Turso DB) ───────────────────────────────────
+
+// Retrieve trade log history
+app.get('/api/trades', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT * FROM trades WHERE user_id = ? ORDER BY created_at DESC',
+      args: [req.user.id]
+    });
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Webhook for Make.com execution updates
+app.post('/api/webhook/trade', async (req, res) => {
+  const token = req.headers['x-webhook-token'];
+  if (!token || token !== MAKE_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized webhook request' });
+  }
+
+  const { id, userId, symbol, direction, qty, price, status, pnl, comment } = req.body || {};
+  if (!symbol || !direction || !qty || !price || !status) {
+    return res.status(400).json({ error: 'Missing required webhook fields' });
+  }
+
+  const now = new Date().toISOString();
+  const activeUserId = userId || 'u_admin_default';
+
+  try {
+    const check = await db.execute({
+      sql: 'SELECT id FROM trades WHERE id = ?',
+      args: [id || '']
+    });
+
+    if (id && check.rows.length > 0) {
+      const closedAt = status === 'CLOSED' ? now : null;
+      await db.execute({
+        sql: 'UPDATE trades SET status = ?, pnl = ?, closed_at = ?, comment = ? WHERE id = ?',
+        args: [status, pnl || 0.0, closedAt, comment || null, id]
+      });
+      console.log(`📡 Webhook trade updated: ${id} - ${symbol} is now ${status}`);
+    } else {
+      const tradeId = id || `t_${Date.now()}`;
+      const closedAt = status === 'CLOSED' ? now : null;
+      await db.execute({
+        sql: 'INSERT INTO trades (id, user_id, symbol, direction, qty, price, status, pnl, created_at, closed_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        args: [tradeId, activeUserId, symbol, direction, Number(qty), Number(price), status, pnl || 0.0, now, closedAt, comment || null]
+      });
+      console.log(`📡 Webhook trade created: ${tradeId} - ${symbol} ${direction}`);
+    }
+
+    // Notify connected browser clients to refresh trades
+    broadcast(JSON.stringify({ type: 'webhook_trade_update' }));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Webhook trade record failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Place Order Endpoint ───────────────────────────────────────────────────
 
-app.post('/api/order', async (req, res) => {
+app.post('/api/order', authenticateToken, async (req, res) => {
   if (!ACCESS_TOKEN || ACCESS_TOKEN === 'YOUR_UPSTOX_ACCESS_TOKEN_HERE') {
     return res.json({ success: false, error: 'Upstox not configured' });
   }
@@ -1127,11 +1898,11 @@ function stopDemoTicks() {
 }
 
 // ─── Mode Endpoints ────────────────────────────────────────────────────────
-app.get('/api/mode', (req, res) => {
+app.get('/api/mode', authenticateToken, (req, res) => {
   res.json({ mode: currentMode });
 });
 
-app.post('/api/mode', (req, res) => {
+app.post('/api/mode', authenticateToken, (req, res) => {
   const { mode } = req.body;
   if (mode !== 'live' && mode !== 'demo') {
     return res.status(400).json({ error: 'Mode must be "live" or "demo"' });
@@ -1156,7 +1927,7 @@ app.post('/api/mode', (req, res) => {
 });
 
 // Debug endpoint to check server state
-app.get('/api/debug', (req, res) => {
+app.get('/api/debug', authenticateToken, (req, res) => {
   const allKeys = Array.from(subscribedKeys);
   const sampleKeys = allKeys.slice(0, 10);
   res.json({
@@ -1196,9 +1967,30 @@ const server = app.listen(PORT, () => {
 });
 
 server.on('upgrade', (req, socket, head) => {
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
-  });
+  try {
+    const parsedUrl = new URL(req.url, 'http://localhost');
+    const token = parsedUrl.searchParams.get('token');
+
+    if (!token) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+      if (err) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
+    });
+  } catch (err) {
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+  }
 });
 
 wss.on('connection', (ws) => {

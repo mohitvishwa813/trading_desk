@@ -88,6 +88,7 @@ export function run(candles, code) {
 
   // ── Pre-compute ALL TA series (lazy, cached) ─────────────────────────────────
   const taCache = {}
+  let currentBarIndex = 0;
 
   const ta = {
     sma: (src, period) => {
@@ -175,12 +176,14 @@ export function run(candles, code) {
       return taCache[key]
     },
     crossover: (a, b, i) => {
+      if (i != null) currentBarIndex = i
       if (i < 1) return false
       const prev_a = a[i-1], prev_b = b[i-1], cur_a = a[i], cur_b = b[i]
       if (prev_a == null || prev_b == null || cur_a == null || cur_b == null) return false
       return prev_a < prev_b && cur_a >= cur_b
     },
     crossunder: (a, b, i) => {
+      if (i != null) currentBarIndex = i
       if (i < 1) return false
       const prev_a = a[i-1], prev_b = b[i-1], cur_a = a[i], cur_b = b[i]
       if (prev_a == null || prev_b == null || cur_a == null || cur_b == null) return false
@@ -302,30 +305,301 @@ export function run(candles, code) {
       taCache[key] = adxArr
       return adxArr
     },
+    requestHigherTF: (symbol, targetTf, seriesFn) => {
+      const tfMap = { '1m': 1, '3m': 3, '5m': 5, '10m': 10, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440 };
+      const currentTfSec = candles[1] && candles[0] ? (candles[1].time - candles[0].time) : 300;
+      const chartTfMin = Math.round(currentTfSec / 60) || 5;
+      const targetTfMin = tfMap[targetTf] || 15;
+      const factor = Math.max(1, Math.round(targetTfMin / chartTfMin));
+      
+      const aggregatedCandles = [];
+      for (let i = 0; i < candles.length; i += factor) {
+        const chunk = candles.slice(i, i + factor);
+        if (chunk.length === 0) continue;
+        const high = Math.max(...chunk.map(c => c.high));
+        const low = Math.min(...chunk.map(c => c.low));
+        const open = chunk[0].open;
+        const close = chunk[chunk.length - 1].close;
+        const volume = chunk.reduce((s, c) => s + (c.volume || 0), 0);
+        aggregatedCandles.push({ time: chunk[chunk.length - 1].time, open, high, low, close, volume });
+      }
+      
+      const aggOutput = seriesFn(aggregatedCandles);
+      const stretched = [];
+      for (let i = 0; i < candles.length; i++) {
+        const aggIdx = Math.floor(i / factor);
+        stretched.push(aggOutput[Math.min(aggIdx, aggOutput.length - 1)]);
+      }
+      return stretched;
+    }
   }
 
-  // ── Strategy signal & alert recorder ─────────────────────────────────────────
+  // ── Position & Trailing Stop Internal State ────────────────────────────────
+  const positionState = { size: 0, avgPrice: 0, realizedPnl: 0 };
+  let exitRules = null; // { sl, tp, setupIndex }
+  let trailingStopState = null; // { active, highestPrice, lowestPrice, trailPercent, id, setupIndex }
+  const alertState = {}; // for de-duplication
+
+  function triggerExit(i, price, label) {
+    const isWin = positionState.size > 0 ? (price >= positionState.avgPrice) : (price <= positionState.avgPrice);
+    rawSignals.push({
+      barIndex: i,
+      type: 'CLOSE',
+      label,
+      time: candles[i].time,
+      price,
+      options: {
+        style: 'label-box',
+        icon: 'circle',
+        bgColor: '#78909c',
+        textColor: '#ffffff',
+        position: 'above'
+      }
+    });
+
+    const tradePnl = positionState.size > 0
+      ? (price - positionState.avgPrice) * positionState.size
+      : (positionState.avgPrice - price) * Math.abs(positionState.size);
+
+    positionState.realizedPnl += tradePnl;
+    positionState.size = 0;
+    positionState.avgPrice = 0;
+    exitRules = null;
+    if (trailingStopState) trailingStopState.active = false;
+  }
+
+  function checkExits(i) {
+    if (positionState.size === 0) return;
+    const c = candles[i];
+    if (!c) return;
+
+    // 1. Check Exit rules (SL/TP)
+    if (exitRules) {
+      if (positionState.size > 0) {
+        if (exitRules.tp && c.high >= exitRules.tp) {
+          triggerExit(i, exitRules.tp, 'TP Hit');
+          return;
+        }
+        if (exitRules.sl && c.low <= exitRules.sl) {
+          triggerExit(i, exitRules.sl, 'SL Hit');
+          return;
+        }
+      } else {
+        if (exitRules.tp && c.low <= exitRules.tp) {
+          triggerExit(i, exitRules.tp, 'TP Hit');
+          return;
+        }
+        if (exitRules.sl && c.high >= exitRules.sl) {
+          triggerExit(i, exitRules.sl, 'SL Hit');
+          return;
+        }
+      }
+    }
+
+    // 2. Check Trailing Stops
+    if (trailingStopState && trailingStopState.active) {
+      if (positionState.size > 0) {
+        trailingStopState.highestPrice = Math.max(trailingStopState.highestPrice, c.high);
+        const stopLevel = trailingStopState.highestPrice * (1 - trailingStopState.trailPercent / 100);
+        
+        // Update priceLine drawing dynamically
+        lineMap.set(trailingStopState.id, {
+          id: trailingStopState.id,
+          price: stopLevel,
+          label: `TRAILING SL: ${stopLevel.toFixed(1)}`,
+          color: '#ef5350',
+          style: 'dashed',
+          labelBg: '#ef5350',
+          labelTextColor: '#fff',
+          extendRight: true
+        });
+
+        if (c.low <= stopLevel) {
+          triggerExit(i, stopLevel, 'Trailing SL Hit');
+        }
+      } else {
+        trailingStopState.lowestPrice = Math.min(trailingStopState.lowestPrice, c.low);
+        const stopLevel = trailingStopState.lowestPrice * (1 + trailingStopState.trailPercent / 100);
+        
+        lineMap.set(trailingStopState.id, {
+          id: trailingStopState.id,
+          price: stopLevel,
+          label: `TRAILING SL: ${stopLevel.toFixed(1)}`,
+          color: '#26a69a',
+          style: 'dashed',
+          labelBg: '#26a69a',
+          labelTextColor: '#fff',
+          extendRight: true
+        });
+
+        if (c.high >= stopLevel) {
+          triggerExit(i, stopLevel, 'Trailing SL Hit');
+        }
+      }
+    }
+  }
+
+  // ── Strategy Namespace ─────────────────────────────────────────────────────
   const strategy = {
-    buy: (i, label = 'Buy') => {
-      if (i < 0 || i >= candles.length) return
-      rawSignals.push({ barIndex: i, type: 'BUY', label, time: candles[i].time, price: candles[i].close })
+    position: {
+      get size() { return positionState.size; },
+      get avgPrice() { return positionState.avgPrice; },
+      get pnl() {
+        if (positionState.size === 0) return 0;
+        const currentPrice = closeArr[currentBarIndex] || 0;
+        return positionState.size > 0
+          ? (currentPrice - positionState.avgPrice) * positionState.size
+          : (positionState.avgPrice - currentPrice) * Math.abs(positionState.size);
+      }
     },
-    sell: (i, label = 'Sell') => {
+    get equity() {
+      return 100000 + positionState.realizedPnl + strategy.position.pnl;
+    },
+    buy: (i, label = 'Buy', options = {}) => {
       if (i < 0 || i >= candles.length) return
-      rawSignals.push({ barIndex: i, type: 'SELL', label, time: candles[i].time, price: candles[i].close })
+      currentBarIndex = i;
+      checkExits(i);
+
+      const qty = options.qty || 1;
+      const price = candles[i].close;
+
+      if (positionState.size < 0) {
+        // Reverse short position first
+        const sizeAbs = Math.abs(positionState.size);
+        const closedQty = Math.min(qty, sizeAbs);
+        const pnl = (positionState.avgPrice - price) * closedQty;
+        positionState.realizedPnl += pnl;
+
+        if (qty > sizeAbs) {
+          const rem = qty - sizeAbs;
+          positionState.size = rem;
+          positionState.avgPrice = price;
+        } else if (qty < sizeAbs) {
+          positionState.size = positionState.size + qty;
+        } else {
+          positionState.size = 0;
+          positionState.avgPrice = 0;
+        }
+      } else {
+        // Accumulate long position
+        positionState.avgPrice = ((positionState.avgPrice * positionState.size) + (price * qty)) / (positionState.size + qty);
+        positionState.size += qty;
+      }
+
+      rawSignals.push({
+        barIndex: i,
+        type: 'BUY',
+        label,
+        time: candles[i].time,
+        price,
+        options: {
+          style: options.style || 'arrow',
+          icon: options.icon || 'check',
+          bgColor: options.bgColor || '#00c853',
+          textColor: options.textColor || '#ffffff',
+          position: options.position || 'below',
+          qty
+        }
+      });
+    },
+    sell: (i, label = 'Sell', options = {}) => {
+      if (i < 0 || i >= candles.length) return
+      currentBarIndex = i;
+      checkExits(i);
+
+      const qty = options.qty || 1;
+      const price = candles[i].close;
+
+      if (positionState.size > 0) {
+        // Reverse long position first
+        const closedQty = Math.min(qty, positionState.size);
+        const pnl = (price - positionState.avgPrice) * closedQty;
+        positionState.realizedPnl += pnl;
+
+        if (qty > positionState.size) {
+          const rem = qty - positionState.size;
+          positionState.size = -rem;
+          positionState.avgPrice = price;
+        } else if (qty < positionState.size) {
+          positionState.size -= qty;
+        } else {
+          positionState.size = 0;
+          positionState.avgPrice = 0;
+        }
+      } else {
+        // Accumulate short position
+        const absSize = Math.abs(positionState.size);
+        positionState.avgPrice = ((positionState.avgPrice * absSize) + (price * qty)) / (absSize + qty);
+        positionState.size -= qty;
+      }
+
+      rawSignals.push({
+        barIndex: i,
+        type: 'SELL',
+        label,
+        time: candles[i].time,
+        price,
+        options: {
+          style: options.style || 'arrow',
+          icon: options.icon || 'circle',
+          bgColor: options.bgColor || '#ef5350',
+          textColor: options.textColor || '#ffffff',
+          position: options.position || 'above',
+          qty
+        }
+      });
     },
     close: (i, label = 'Close') => {
-      if (i < 0 || i >= candles.length) return
-      rawSignals.push({ barIndex: i, type: 'CLOSE', label, time: candles[i].time, price: candles[i].close })
+      if (i < 0 || i >= candles.length || positionState.size === 0) return
+      currentBarIndex = i;
+      triggerExit(i, candles[i].close, label);
     },
-    alert: (condition, message, barIdx = candles.length - 1) => {
+    exit: (i, opts = {}) => {
+      if (i < 0 || i >= candles.length) return;
+      currentBarIndex = i;
+      exitRules = { sl: opts.sl, tp: opts.tp, setupIndex: i };
+    },
+    trailingStop: (opts = {}) => {
+      if (positionState.size === 0) return;
+      trailingStopState = {
+        active: true,
+        highestPrice: candles[currentBarIndex]?.high || candles[currentBarIndex]?.close,
+        lowestPrice: candles[currentBarIndex]?.low || candles[currentBarIndex]?.close,
+        trailPercent: opts.trailPercent || 1,
+        id: opts.id || 'ts_line',
+        setupIndex: currentBarIndex
+      };
+    },
+    alert: (condition, options = {}) => {
+      if (typeof options === 'string') {
+        options = { message: options, id: `msg_${Math.random()}` };
+      }
+      const id = options.id || 'default_alert';
       if (condition) {
-        const idx = Math.max(0, Math.min(barIdx, candles.length - 1))
-        rawAlerts.push({
-          time: candles[idx]?.time || Math.floor(Date.now() / 1000),
-          barIndex: idx,
-          message: String(message),
-        })
+        if (!alertState[id]) {
+          alertState[id] = true;
+          const bar = candles[currentBarIndex] || candles[candles.length - 1];
+          let msg = options.message || 'Alert Triggered';
+          
+          // Replace template string values
+          msg = msg.replace(/\{\{close\}\}/g, bar.close.toFixed(1));
+          msg = msg.replace(/\{\{open\}\}/g, bar.open.toFixed(1));
+          msg = msg.replace(/\{\{high\}\}/g, bar.high.toFixed(1));
+          msg = msg.replace(/\{\{low\}\}/g, bar.low.toFixed(1));
+          msg = msg.replace(/\{\{time\}\}/g, new Date(bar.time * 1000).toLocaleTimeString());
+
+          rawAlerts.push({
+            id,
+            message: msg,
+            level: options.level || 'info',
+            time: bar.time,
+            price: bar.close,
+            liveOnly: !!options.liveOnly,
+            webhook: options.webhook || null
+          });
+        }
+      } else {
+        alertState[id] = false;
       }
     },
   }
@@ -370,6 +644,31 @@ export function run(candles, code) {
         position: options.position || 'above',
       })
     },
+    priceLine: (id, price, opts = {}) => {
+      lineMap.set(id, {
+        id,
+        price,
+        label: opts.label || id,
+        color: opts.color || '#4f9cf9',
+        style: opts.lineStyle || 'dashed',
+        labelBg: opts.labelBg || '#555555',
+        labelTextColor: opts.labelTextColor || '#fff',
+        extendRight: opts.extendRight !== false
+      });
+    },
+    marker: (i, opts = {}) => {
+      if (i < 0 || i >= candles.length) return;
+      const key = `${i}_${opts.shape || 'arrow-up'}`;
+      labelMap.set(key, {
+        id: key,
+        x: candles[i].time,
+        y: candles[i].close,
+        text: opts.shape === 'arrow-up' ? '▲' : opts.shape === 'arrow-down' ? '▼' : '◆',
+        color: 'transparent',
+        textColor: opts.color || '#2196f3',
+        position: opts.position || 'below'
+      });
+    }
   }
 
   // ── Stats table / dashboard API ──────────────────────────────────────────────
@@ -388,6 +687,29 @@ export function run(candles, code) {
   console.log  = (...args) => { logs.push(`[LOG] ${args.map(safeStr).join(' ')}`); origLog(...args) }
   console.warn = (...args) => { logs.push(`[WARN] ${args.map(safeStr).join(' ')}`); origWarn(...args) }
 
+  // ── Proxy Wrapping for auto currentBarIndex tracking ───────────────────────
+  const createIndexProxy = (arr) => {
+    return new Proxy(arr, {
+      get(target, prop) {
+        if (typeof prop === 'string' && !isNaN(prop)) {
+          const idx = Number(prop);
+          if (idx >= 0 && idx < arr.length) {
+            currentBarIndex = idx;
+            checkExits(idx);
+          }
+        }
+        return target[prop];
+      }
+    });
+  };
+
+  const openProxy = createIndexProxy(openArr);
+  const highProxy = createIndexProxy(highArr);
+  const lowProxy = createIndexProxy(lowArr);
+  const closeProxy = createIndexProxy(closeArr);
+  const volumeProxy = createIndexProxy(volumeArr);
+  const barsProxy = createIndexProxy(candles);
+
   try {
     // ── Execute user code ──────────────────────────────────────────────────────
     // eslint-disable-next-line no-new-func
@@ -396,7 +718,7 @@ export function run(candles, code) {
       'ta', 'strategy', 'plot', 'chart', 'dashboard',
       code
     )
-    fn(candles, openArr, highArr, lowArr, closeArr, volumeArr, ta, strategy, plot, chart, dashboard)
+    fn(barsProxy, openProxy, highProxy, lowProxy, closeProxy, volumeProxy, ta, strategy, plot, chart, dashboard)
 
     logs.unshift(`[INFO] OK — ${candles.length} bars processed, ${rawSignals.length} signals`)
   } catch (err) {
@@ -454,35 +776,75 @@ function computeStats(signals, candles) {
     if (!openTrade && (sig.type === 'BUY' || sig.type === 'SELL')) {
       openTrade = { ...sig }
     } else if (openTrade) {
-      const entryPrice = openTrade.price
-      const exitPrice  = sig.price
-      let pnl
-      if (openTrade.type === 'BUY') {
-        pnl = exitPrice - entryPrice
-      } else {
-        pnl = entryPrice - exitPrice
+      if (sig.type === 'CLOSE' || (sig.type !== openTrade.type)) {
+        const entryPrice = openTrade.price
+        const exitPrice  = sig.price
+        let pnl
+        if (openTrade.type === 'BUY') {
+          pnl = exitPrice - entryPrice
+        } else {
+          pnl = entryPrice - exitPrice
+        }
+        trades.push({
+          type: openTrade.type,
+          entryPrice,
+          exitPrice,
+          pnl: parseFloat(pnl.toFixed(2)),
+          entryTime: openTrade.time,
+          exitTime: sig.time,
+          pnlPercent: parseFloat(((pnl / entryPrice) * 100).toFixed(2))
+        });
+        openTrade = null;
       }
-      trades.push({ entryPrice, exitPrice, pnl, entryTime: openTrade.time, exitTime: sig.time })
-      openTrade = null
     }
   }
 
-  if (trades.length === 0) return { totalTrades: 0 }
+  if (trades.length === 0) {
+    return {
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      winRate: '0%',
+      totalPnL: 0,
+      profitFactor: 0,
+      sharpeRatio: 0,
+      maxDrawdown: 0,
+      equityCurve: [],
+      trades: []
+    }
+  }
 
   const wins = trades.filter(t => t.pnl > 0).length
   const losses = trades.filter(t => t.pnl <= 0).length
   const totalPnL = trades.reduce((s, t) => s + t.pnl, 0)
-  const avgWin   = wins > 0 ? trades.filter(t => t.pnl > 0).reduce((s, t) => s + t.pnl, 0) / wins : 0
-  const avgLoss  = losses > 0 ? trades.filter(t => t.pnl <= 0).reduce((s, t) => s + t.pnl, 0) / losses : 0
+  
+  const totalWinAmount = trades.filter(t => t.pnl > 0).reduce((s, t) => s + t.pnl, 0)
+  const totalLossAmount = Math.abs(trades.filter(t => t.pnl <= 0).reduce((s, t) => s + t.pnl, 0))
+  const profitFactor = totalLossAmount > 0 ? parseFloat((totalWinAmount / totalLossAmount).toFixed(2)) : parseFloat(totalWinAmount.toFixed(2))
 
-  // Max drawdown
-  let peak = 0, cumPnL = 0, maxDD = 0
+  const avgWin   = wins > 0 ? totalWinAmount / wins : 0
+  const avgLoss  = losses > 0 ? totalLossAmount / losses : 0
+
+  // Equity curve & Drawdown
+  let peak = 100000
+  let currentEquity = 100000
+  let maxDD = 0
+  const equityCurve = [{ time: candles[0]?.time, value: 100000 }]
+
   for (const t of trades) {
-    cumPnL += t.pnl
-    if (cumPnL > peak) peak = cumPnL
-    const dd = peak - cumPnL
+    currentEquity += t.pnl * 100; // Assume trading standard sizes or multiply by 100 for visual effect
+    equityCurve.push({ time: t.exitTime, value: parseFloat(currentEquity.toFixed(2)) })
+    if (currentEquity > peak) peak = currentEquity
+    const dd = ((peak - currentEquity) / peak) * 100
     if (dd > maxDD) maxDD = dd
   }
+
+  // Sharpe Ratio (simplified: avg returns / standard deviation of returns)
+  const returns = trades.map(t => t.pnlPercent)
+  const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length
+  const variance = returns.reduce((a, b) => a + Math.pow(b - avgReturn, 2), 0) / returns.length
+  const stdDev = Math.sqrt(variance)
+  const sharpeRatio = stdDev > 0 ? parseFloat((avgReturn / stdDev).toFixed(2)) : 0
 
   return {
     totalTrades: trades.length,
@@ -492,7 +854,11 @@ function computeStats(signals, candles) {
     totalPnL: parseFloat(totalPnL.toFixed(2)),
     avgWin: parseFloat(avgWin.toFixed(2)),
     avgLoss: parseFloat(avgLoss.toFixed(2)),
-    maxDrawdown: parseFloat((-maxDD).toFixed(2)),
+    maxDrawdown: parseFloat(maxDD.toFixed(2)),
+    profitFactor,
+    sharpeRatio,
+    equityCurve,
+    trades
   }
 }
 

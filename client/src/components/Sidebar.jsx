@@ -37,6 +37,7 @@ export default function Sidebar({
   sidebarCollapsed,
   onToggleCollapse,
   onStrategyResult,
+  tradesRefreshKey,
 }) {
   const [activeTab, setActiveTab] = useState(() => {
     try { return localStorage.getItem(LS_TAB) || 'trade' } catch { return 'trade' }
@@ -117,6 +118,7 @@ export default function Sidebar({
             prices={prices}
             tick={tick}
             instrumentKey={instrumentKey}
+            tradesRefreshKey={tradesRefreshKey}
           />
         ) : (
           <StrategyEditor activeSymbol={activeSymbol} onStrategyResult={onStrategyResult} />
@@ -129,12 +131,65 @@ export default function Sidebar({
 /* ================================================================== */
 /*  TRADE TAB — existing content                                        */
 /* ================================================================== */
-function TradeTabContent({ activeSymbol, price, alerts, webhookStatus, onSendAlert, prices, tick, instrumentKey }) {
-  return (
-    <div className="flex flex-col min-h-0 flex-1">
+function TradeTabContent({ activeSymbol, price, alerts, webhookStatus, onSendAlert, prices, tick, instrumentKey, tradesRefreshKey }) {
+  const [bottomTab, setBottomTab] = useState('alerts') // 'alerts' | 'journal'
+  const [bottomCollapsed, setBottomCollapsed] = useState(true)
+  const [trades, setTrades] = useState([])
+  const [tradesLoading, setTradesLoading] = useState(false)
+  const [bottomHeight, setBottomHeight] = useState(280) // px height of expanded log panel
+  const containerRef = useRef(null)
+  const isDragging = useRef(false)
 
-      {/* ── Top: Trading form (scrolls independently) ── */}
-      <div className="overflow-y-auto shrink-0" style={{ maxHeight: '55%' }}>
+  // Fetch trades from database
+  useEffect(() => {
+    if (bottomTab === 'journal') {
+      setTradesLoading(true)
+      fetch('/api/trades')
+        .then((r) => {
+          if (!r.ok) throw new Error('Failed to fetch trades')
+          return r.json()
+        })
+        .then((data) => setTrades(data || []))
+        .catch((err) => console.error(err.message))
+        .finally(() => setTradesLoading(false))
+    }
+  }, [bottomTab, tradesRefreshKey])
+
+  // Drag-to-resize handlers for bottom panel
+  const handleDragStart = useCallback((e) => {
+    e.preventDefault()
+    isDragging.current = true
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+
+    const onMove = (ev) => {
+      if (!isDragging.current || !containerRef.current) return
+      const containerRect = containerRef.current.getBoundingClientRect()
+      const newHeight = containerRect.bottom - ev.clientY
+      const minH = 120
+      const maxH = containerRect.height - 100 // leave at least 100px for top
+      setBottomHeight(Math.max(minH, Math.min(maxH, newHeight)))
+    }
+
+    const onUp = () => {
+      isDragging.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
+  return (
+    <div ref={containerRef} className="flex flex-col min-h-0 flex-1">
+
+      {/* ── Top: Trading form (scrolls dynamically based on collapse state) ── */}
+      <div 
+        className="overflow-y-auto flex-1 min-h-[80px]"
+      >
         <TradingPanel
           activeSymbol={activeSymbol}
           price={price}
@@ -145,19 +200,131 @@ function TradeTabContent({ activeSymbol, price, alerts, webhookStatus, onSendAle
         />
       </div>
 
-      {/* ── Bottom: Alert Log + Webhook (always visible, fills remaining space) ── */}
-      <div className="flex flex-col flex-1 min-h-0 border-t border-border">
-        {/* Alert Log header */}
-        <div className="text-[10px] font-bold tracking-widest text-muted uppercase px-3.5 py-2.5 border-b border-border bg-[#0d0f14] shrink-0">
-          Alert Log
+      {/* ── Drag Handle (resize bar) ── */}
+      {!bottomCollapsed && (
+        <div
+          onMouseDown={handleDragStart}
+          className="shrink-0 flex items-center justify-center cursor-row-resize group border-t border-border hover:border-accent/60 transition-colors"
+          style={{ height: 7 }}
+          title="Drag to resize"
+        >
+          <div className="w-8 h-[3px] rounded-full bg-[#2a2e3e] group-hover:bg-accent/60 transition-colors" />
         </div>
-        {/* Alert entries — scrollable, always gets at least 150px */}
-        <div className="flex-1 overflow-y-auto min-h-[150px]">
-          <AlertLog alerts={alerts} />
+      )}
+
+      {/* ── Bottom: Alert Log + Webhook (collapsible, resizable) ── */}
+      <div 
+        className={`flex flex-col ${bottomCollapsed ? 'shrink-0' : 'shrink-0 min-h-0'}`}
+        style={!bottomCollapsed ? { height: bottomHeight } : undefined}
+      >
+        {/* Sub-Tabs Selector */}
+        <div className="flex border-b border-border bg-[#0d0f14] shrink-0 items-center justify-between">
+          <div className="flex flex-1">
+            <button
+              onClick={() => { setBottomTab('alerts'); setBottomCollapsed(false); }}
+              className={`flex-1 py-2 text-[10px] font-bold tracking-widest uppercase border-r border-border transition-colors outline-none
+                ${bottomTab === 'alerts' && !bottomCollapsed ? 'text-accent bg-[#151922]' : 'text-muted hover:text-white bg-transparent'}
+              `}
+            >
+              Alert Log
+            </button>
+            <button
+              onClick={() => { setBottomTab('journal'); setBottomCollapsed(false); }}
+              className={`flex-1 py-2 text-[10px] font-bold tracking-widest uppercase border-r border-border transition-colors outline-none
+                ${bottomTab === 'journal' && !bottomCollapsed ? 'text-accent bg-[#151922]' : 'text-muted hover:text-white bg-transparent'}
+              `}
+            >
+              make.com logs
+            </button>
+          </div>
+          
+          <button
+            onClick={() => setBottomCollapsed(prev => !prev)}
+            className="px-3 py-2 text-muted hover:text-white transition-colors outline-none border-l border-border"
+            title={bottomCollapsed ? "Expand Log Panel" : "Collapse Log Panel"}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform duration-200 ${bottomCollapsed ? 'rotate-180' : ''}`}>
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
         </div>
-        <WebhookPanel status={webhookStatus} />
+
+        {/* Tab Content Area */}
+        {!bottomCollapsed && (
+          <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
+            {bottomTab === 'alerts' ? (
+              <AlertLog alerts={alerts} />
+            ) : (
+              <TradeJournal trades={trades} loading={tradesLoading} />
+            )}
+          </div>
+        )}
+        {!bottomCollapsed && <WebhookPanel status={webhookStatus} />}
       </div>
 
+    </div>
+  )
+}
+
+function TradeJournal({ trades, loading }) {
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 p-6 text-muted text-xs">
+        <svg className="animate-spin h-5 w-5 text-indigo-500 mb-2" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+        <span>Loading journal entries...</span>
+      </div>
+    )
+  }
+
+  if (trades.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 p-6 text-muted text-xs">
+        <span>No trades recorded in journal.</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col p-2 gap-1.5 font-mono text-[11px] text-slate-300">
+      {trades.map((t) => {
+        const isBuy = t.direction.toUpperCase() === 'BUY'
+        const isClosed = t.status.toUpperCase() === 'CLOSED'
+        const pnlColor = t.pnl > 0 ? 'text-[#00e676]' : t.pnl < 0 ? 'text-[#ff1744]' : 'text-slate-400'
+
+        return (
+          <div key={t.id} className="p-2 bg-[#12151e] border border-[#1e2332] rounded flex flex-col gap-1">
+            <div className="flex justify-between items-center">
+              <span className="font-bold text-white">{t.symbol}</span>
+              <span className={`px-1 rounded text-[9px] font-bold ${isBuy ? 'bg-[#00e676]/10 text-[#00e676]' : 'bg-[#ff1744]/10 text-[#ff1744]'}`}>
+                {t.direction}
+              </span>
+            </div>
+            
+            <div className="flex justify-between text-[10px] text-muted">
+              <span>Qty: {t.qty}</span>
+              <span>Entry: {t.price}</span>
+            </div>
+
+            <div className="flex justify-between text-[10px] text-muted border-t border-border/20 pt-1 mt-0.5">
+              <span>Status: <span className={isClosed ? 'text-slate-400' : 'text-yellow'}>{t.status}</span></span>
+              {isClosed && (
+                <span>
+                  P&L: <span className={`font-bold ${pnlColor}`}>{t.pnl > 0 ? `+${t.pnl}` : t.pnl}</span>
+                </span>
+              )}
+            </div>
+            
+            {t.comment && (
+              <div className="text-[9px] text-indigo-300 mt-1 italic leading-tight">
+                {t.comment}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -166,7 +333,7 @@ function TradeTabContent({ activeSymbol, price, alerts, webhookStatus, onSendAle
 /*  TRADING PANEL                                                       */
 /* ================================================================== */
 function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSendAlert }) {
-  const [tradingMode, setTradingMode] = useState(null) // 'paper' | 'live' | null
+  const [tradingMode, setTradingMode] = useState('paper') // 'paper' | 'live' | null
 
   return (
     <div className="border-b border-border">
@@ -216,7 +383,7 @@ function ModeToggle({ value, onChange }) {
   return (
     <div className="flex gap-1.5 mb-3">
       {btn('PAPER TRADE', 'paper')}
-      {btn('LIVE TRADE', 'live')}
+      {/* {btn('LIVE TRADE', 'live')} */}
     </div>
   )
 }
@@ -509,31 +676,226 @@ async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, trigg
 /* ================================================================== */
 /*  ALERT LOG                                                           */
 /* ================================================================== */
-function AlertLog({ alerts }) {
-  const colorMap = {
-    BUY:  'border-l-green bg-green/5',
-    SELL: 'border-l-red bg-red/5',
-    INFO: 'border-l-accent bg-accent/5',
+function parseAlertTradeDetails(message) {
+  const regex = /\[(?:Paper|Live)\s+(BUY|SELL)\]\s+(\d+)\s+([A-Z0-9]+)?\s*@\s*₹?([\d.]+)/i;
+  const match = message.match(regex);
+  if (match) {
+    return {
+      side: match[1].toUpperCase(),
+      qty: parseInt(match[2], 10),
+      price: parseFloat(match[4])
+    };
   }
-
-  return (
-    <div className="p-2 space-y-1.5">
-      {alerts.map((a, i) => (
-        <div key={i} className={`p-2 rounded border-l-[3px] text-[11px] leading-relaxed ${colorMap[a.signal] || colorMap.INFO}`}>
-          <strong>{a.signal} {a.symbol && `— ${a.symbol}`}</strong><br />
-          {a.message}
-          {a.signal !== 'INFO' && (
-            <span className="text-accent"> ₹{Number(priceFromAlert(a)).toFixed(2)}</span>
-          )}
-          <div className="text-[9px] text-muted mt-0.5">{a.time || ''}</div>
-        </div>
-      ))}
-    </div>
-  )
+  return null;
 }
 
-function priceFromAlert(a) {
-  return a.message.match(/₹([\d.]+)/)?.[1] || 0
+function calculateGroupPnL(alerts) {
+  // Sort oldest first
+  const sorted = [...alerts].sort((a, b) => new Date(a.timestamp || a.time) - new Date(b.timestamp || b.time));
+  
+  let position = 0;
+  let avgPrice = 0;
+  let totalRealizedPnL = 0;
+  
+  for (const al of sorted) {
+    const trade = parseAlertTradeDetails(al.message);
+    if (!trade) continue;
+    
+    const { side, qty, price } = trade;
+    
+    if (position === 0) {
+      position = side === 'BUY' ? qty : -qty;
+      avgPrice = price;
+    } else if (position > 0) {
+      if (side === 'BUY') {
+        avgPrice = (avgPrice * position + price * qty) / (position + qty);
+        position += qty;
+      } else {
+        const closedQty = Math.min(qty, position);
+        totalRealizedPnL += closedQty * (price - avgPrice);
+        position -= qty;
+        if (position < 0) {
+          avgPrice = price;
+        }
+      }
+    } else {
+      if (side === 'SELL') {
+        avgPrice = (avgPrice * Math.abs(position) + price * qty) / (Math.abs(position) + qty);
+        position -= qty;
+      } else {
+        const closedQty = Math.min(qty, Math.abs(position));
+        totalRealizedPnL += closedQty * (avgPrice - price);
+        position += qty;
+        if (position > 0) {
+          avgPrice = price;
+        }
+      }
+    }
+  }
+  return totalRealizedPnL;
+}
+
+function AlertLog({ alerts }) {
+  const [expandedGroups, setExpandedGroups] = useState({});
+
+  const toggleGroup = (key) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  // Grouping logic
+  const grouped = {};
+  alerts.forEach(a => {
+    const dateStr = a.timestamp ? new Date(a.timestamp).toLocaleDateString() : 'System';
+    const key = a.tradeId || `nogroup-${dateStr}-${a.symbol || 'SYSTEM'}`;
+    
+    if (!grouped[key]) {
+      grouped[key] = {
+        key,
+        tradeId: a.tradeId || null,
+        symbol: a.symbol || 'SYSTEM',
+        primarySignal: 'INFO',
+        alerts: [],
+        latestTime: a.timestamp || a.time || ''
+      };
+    }
+    grouped[key].alerts.push(a);
+
+    const sigUpper = a.signal?.toUpperCase();
+    if (sigUpper === 'BUY' || sigUpper === 'SELL') {
+      grouped[key].primarySignal = sigUpper;
+    }
+  });
+
+  const groupList = Object.values(grouped).sort((a, b) => {
+    return new Date(b.latestTime) - new Date(a.latestTime);
+  });
+
+  const pillMap = {
+    BUY:  'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+    SELL: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+    INFO: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
+  };
+
+  if (alerts.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 p-6 text-muted text-xs">
+        <span>No alerts triggered.</span>
+      </div>
+    );
+  }
+
+  // Calculate Today's Total realized PnL
+  const todayStr = new Date().toDateString();
+  const todayPnL = groupList.reduce((sum, g) => {
+    const isToday = new Date(g.latestTime).toDateString() === todayStr;
+    return sum + (isToday ? calculateGroupPnL(g.alerts) : 0);
+  }, 0);
+
+  return (
+    <div className="p-2 space-y-2 select-none">
+      {/* Today's PnL Dashboard Widget */}
+      <div className="bg-[#0b0d15] border border-[#1b1f2e] rounded-lg p-3 flex items-center justify-between shadow-sm">
+        <div className="space-y-0.5">
+          <span className="text-[10px] text-[#808290] font-bold uppercase tracking-wider block">Today's Realized P&L</span>
+          <span className="text-[9px] text-[#4f5260] block">Real-time matching from alert logs</span>
+        </div>
+        <div className={`text-sm font-extrabold font-mono px-2.5 py-1 rounded border ${
+          todayPnL > 0 
+            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+            : todayPnL < 0 
+              ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+              : 'bg-[#181b28] text-slate-400 border-[#242838]'
+        }`}>
+          {todayPnL > 0 ? '+' : ''}₹{todayPnL.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </div>
+      </div>
+      {groupList.map(group => {
+        const groupPnL = calculateGroupPnL(group.alerts);
+        const isExpanded = !!expandedGroups[group.key];
+        const hasTradeId = !!group.tradeId;
+        const totalAlerts = group.alerts.length;
+        
+        return (
+          <div 
+            key={group.key}
+            className="border border-[#1f2332] rounded-lg overflow-hidden bg-[#0d0f17] transition-all duration-200"
+          >
+            {/* Accordion Header */}
+            <div 
+              onClick={() => toggleGroup(group.key)}
+              className="flex items-center justify-between px-3 py-2.5 cursor-pointer bg-[#10121e] hover:bg-[#151928] transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border ${pillMap[group.primarySignal] || pillMap.INFO}`}>
+                  {group.primarySignal}
+                </span>
+                <span className="text-xs font-bold text-[#e2e8f0]">
+                  {group.symbol}
+                </span>
+                {groupPnL !== 0 && (
+                  <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded ${
+                    groupPnL > 0 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                  }`}>
+                    {groupPnL > 0 ? '+' : ''}₹{groupPnL.toFixed(2)}
+                  </span>
+                )}
+                <span className="text-[10px] text-muted font-mono">
+                  {hasTradeId ? `(${totalAlerts} updates)` : `(${totalAlerts} logs)`}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] text-[#5b5e70] font-mono">
+                  {group.latestTime ? new Date(group.latestTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                </span>
+                <svg 
+                  width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                  className={`text-muted transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </div>
+            </div>
+
+            {/* Accordion Body */}
+            {isExpanded && (
+              <div className="px-3 py-2 border-t border-[#181a26]/50 bg-[#08090f]/50 space-y-2 relative">
+                {/* Timeline vertical bar */}
+                <div className="absolute left-[20px] top-3 bottom-3 w-[1.5px] bg-[#1d2133]" />
+                
+                {group.alerts.map((al, idx) => {
+                  const isTradeAlert = al.signal === 'BUY' || al.signal === 'SELL';
+                  
+                  return (
+                    <div key={idx} className="flex gap-3 text-[11px] leading-relaxed relative pl-1">
+                      {/* Timeline dot */}
+                      <div className="w-[10px] h-[10px] rounded-full bg-[#181a26] border-2 border-[#30364d] mt-1 shrink-0 z-10 flex items-center justify-center">
+                        {isTradeAlert && <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7]" />}
+                      </div>
+                      
+                      {/* Alert message body */}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-slate-300 font-mono text-[10.5px]">
+                          {al.message}
+                        </div>
+                        <div className="text-[9px] text-muted/60 mt-0.5 font-mono">
+                          {al.timestamp ? new Date(al.timestamp).toLocaleTimeString() : al.time || ''}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /* ================================================================== */

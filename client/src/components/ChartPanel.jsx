@@ -7,6 +7,8 @@ import {
   sma, ema, vwap, atr, supertrend, rsi, macd,
   stochastic, bollingerBands, obv, volumeMa,
 } from '../utils/indicators'
+import { transformHeikinAshi, transformRenko, transformLineBreak } from '../utils/candleTransformer'
+import { run as runStrategy } from '../utils/strategyRunner'
 
 // --- Constants ------------------------------
 const TF_SECONDS = {
@@ -93,10 +95,15 @@ function computeHeikinAshi(candles) {
   return ha
 }
 
-function transformData(candles, style) {
+function transformData(candles, style, renkoBrickSize = 10) {
   if (style === 'heikin_ashi') {
-    const ha = computeHeikinAshi(candles)
-    return ha.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }))
+    return transformHeikinAshi(candles)
+  }
+  if (style === 'renko') {
+    return transformRenko(candles, renkoBrickSize)
+  }
+  if (style === 'line_break') {
+    return transformLineBreak(candles, 3)
   }
   if (style === 'high_low') {
     return {
@@ -207,7 +214,7 @@ function getSeriesOptions(style) {
   }
 }
 
-function isCandleSeries(style) { return ['candles', 'hollow_candles', 'volume_candles', 'heikin_ashi'].includes(style) }
+function isCandleSeries(style) { return ['candles', 'hollow_candles', 'volume_candles', 'heikin_ashi', 'renko', 'line_break'].includes(style) }
 function isBarSeries(style) { return style === 'bars' }
 function isLineSeries(style) { return ['line', 'line_markers', 'step_line'].includes(style) }
 function isAreaSeries(style) { return ['area', 'hlc_area'].includes(style) }
@@ -412,36 +419,46 @@ export default function ChartPanel({
   chartLayoutMode = 'single',
   chartIndex = 0,
   isFocused = true,
-  onFocus = () => {},
-  onSymbolChange = () => {},
+  onFocus = () => { },
+  onSymbolChange = () => { },
   drawings = [],
-  onDrawingsChange = () => {},
+  onDrawingsChange = () => { },
   activeDrawingTool = 'cursor',
-  onDrawingToolChange = () => {},
+  onDrawingToolChange = () => { },
   indicators = [],
-  onIndicatorsChange = () => {},
+  onIndicatorsChange = () => { },
   replayMode = false,
   replayIndex = 0,
-  onReplayUpdate = () => {},
-  onReplayEnd = () => {},
+  onReplayUpdate = () => { },
+  onReplayEnd = () => { },
   mode = 'live',
   chartStyle = 'candles',
-  onChartStyleChange = () => {},
+  onChartStyleChange = () => { },
   // Ticker Strip props (rendered locally next to timeframes)
   tickerItems = [],
   prices = {},
   openPrices = {},
-  onTickerItemsChange = () => {},
+  onTickerItemsChange = () => { },
   strategySignals = [],
   strategyPlots = [],
   strategyLines = [],
   strategyLabels = [],
   strategyDashboard = {},
+  strategyName = '',
+  onClearStrategy = () => { },
+  tf = '5m',
+  onTimeframeChange = () => { },
+  onCandlesLoaded = () => { },
 }) {
   // --- State ----------------------------------
-  const [tf, setTF] = useState('5m')
+  const setTF = onTimeframeChange
   const [loading, setLoading] = useState(false)
   const [visibleRange, setVisibleRange] = useState(null)
+  const [showPlots, setShowPlots] = useState(true)
+  const [showSignals, setShowSignals] = useState(true)
+  const [showLabels, setShowLabels] = useState(true)
+  const [showStats, setShowStats] = useState(true)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [ctxMenu, setCtxMenu] = useState({ show: false, x: 0, y: 0 })
   const [bottomPanelHeight, setBottomPanelHeight] = useState(() => {
     const saved = localStorage.getItem('chartTimeScaleHeight')
@@ -553,7 +570,7 @@ export default function ChartPanel({
     if (style === 'line_markers' && Array.isArray(data)) {
       series.setMarkers(
         data.filter((_, i) => i % 10 === 0).map(d => ({
-          time: d.time, position: 'abovePrice',
+          time: d.time, position: 'aboveBar',
           color: '#4f9cf9', shape: 'circle', size: 0.5,
         }))
       )
@@ -1029,7 +1046,7 @@ export default function ChartPanel({
       const series = activeSeriesRef.current
       const y = series?.priceToCoordinate?.(tick.ltp)
       if (y != null && Number.isFinite(y)) setPriceLabelY(y)
-    } catch {}
+    } catch { }
   }, [tick])
 
   // --- Fetch history (runs on symbol or timeframe change) ---
@@ -1040,7 +1057,7 @@ export default function ChartPanel({
     candleBufferRef.current = {}
     baseCandlesRef.current = []
     loadedDataRef.current = []
-    
+
     // Wipe series to prevent transient timeline update clashes
     candleSeriesRef.current?.setData([])
     barSeriesRef.current?.setData([])
@@ -1053,28 +1070,29 @@ export default function ChartPanel({
 
     setLoading(true)
 
-    ;(async () => {
-      try {
-        const res = await fetch(`/api/history/${encodeURIComponent(activeSymbol)}?tf=${tf}&key=${encodeURIComponent(instrumentKey || '')}`)
-        const { candles } = await res.json()
-        if (id !== fetchIdRef.current) return
+      ; (async () => {
+        try {
+          const res = await fetch(`/api/history/${encodeURIComponent(activeSymbol)}?tf=${tf}&key=${encodeURIComponent(instrumentKey || '')}`)
+          const { candles } = await res.json()
+          if (id !== fetchIdRef.current) return
 
-        if (candles?.length) {
-          const offset = -new Date().getTimezoneOffset() * 60
-          const localCandles = candles.map(c => ({
-            ...c,
-            time: c.time + offset
-          }))
-          baseCandlesRef.current = localCandles
-          // Use chartStyleRef to avoid stale closure
-          refreshChart(localCandles, chartStyleRef.current)
+          if (candles?.length) {
+            const offset = -new Date().getTimezoneOffset() * 60
+            const localCandles = candles.map(c => ({
+              ...c,
+              time: c.time + offset
+            }))
+            baseCandlesRef.current = localCandles
+            // Use chartStyleRef to avoid stale closure
+            refreshChart(localCandles, chartStyleRef.current)
+            onCandlesLoaded(localCandles)
+          }
+        } catch {
+          // silently fail
+        } finally {
+          if (id === fetchIdRef.current) setLoading(false)
         }
-      } catch {
-        // silently fail
-      } finally {
-        if (id === fetchIdRef.current) setLoading(false)
-      }
-    })()
+      })()
   }, [activeSymbol, tf, refreshChart])  // refreshChart is stable (no tf/style dep)
 
 
@@ -1103,7 +1121,7 @@ export default function ChartPanel({
     const tfSec = TF_SECONDS[tf] || 300
     const offset = -new Date().getTimezoneOffset() * 60
     const nowSec = Math.floor((tick.timestamp || Date.now()) / 1000) + offset
-    
+
     let candleTime
     if (tfSec < 86400) {
       const date = new Date(nowSec * 1000)
@@ -1120,9 +1138,19 @@ export default function ChartPanel({
     // Use instrumentKey as buffer key (unique across symbols)
     const bufKey = instrumentKey || activeSymbol
     const buf = candleBufferRef.current
+    const lastCandle = loadedDataRef.current?.[loadedDataRef.current.length - 1]
+
     if (!buf[bufKey] || buf[bufKey].time !== candleTime) {
-      buf[bufKey] = {
-        time: candleTime, open: tick.ltp, high: tick.ltp, low: tick.ltp, close: tick.ltp,
+      if (lastCandle && lastCandle.time === candleTime) {
+        buf[bufKey] = { ...lastCandle }
+        const c = buf[bufKey]
+        c.high = Math.max(c.high, tick.ltp)
+        c.low = Math.min(c.low, tick.ltp)
+        c.close = tick.ltp
+      } else {
+        buf[bufKey] = {
+          time: candleTime, open: tick.ltp, high: tick.ltp, low: tick.ltp, close: tick.ltp,
+        }
       }
     } else {
       const c = buf[bufKey]
@@ -1134,7 +1162,6 @@ export default function ChartPanel({
     const candle = buf[bufKey]
     const style = chartStyle
 
-    const lastCandle = loadedDataRef.current?.[loadedDataRef.current.length - 1]
     const lastCandleTime = lastCandle ? lastCandle.time : 0
     if (candle.time < lastCandleTime) {
       return
@@ -1293,6 +1320,7 @@ export default function ChartPanel({
 
   // --- Strategy Plots & Signals Rendering --------------------
   const strategySeriesRefs = useRef([])
+  const priceLinesRef = useRef([])
 
   const getActiveSeries = useCallback(() => {
     const style = chartStyleRef.current
@@ -1308,6 +1336,15 @@ export default function ChartPanel({
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
+    const activeSeries = getActiveSeries()
+
+    // Remove old price lines
+    if (activeSeries && priceLinesRef.current) {
+      priceLinesRef.current.forEach(pl => {
+        try { activeSeries.removePriceLine(pl) } catch { /* ok */ }
+      })
+      priceLinesRef.current = []
+    }
 
     // 1. Remove old strategy line plots
     strategySeriesRefs.current.forEach(s => {
@@ -1316,7 +1353,7 @@ export default function ChartPanel({
     strategySeriesRefs.current = []
 
     // 2. Add new strategy line plots
-    if (strategyPlots && strategyPlots.length > 0) {
+    if (showPlots && strategyPlots && strategyPlots.length > 0) {
       strategyPlots.forEach(p => {
         if (!p.data || p.data.length === 0) return
 
@@ -1344,9 +1381,9 @@ export default function ChartPanel({
 
         const series = chart.addLineSeries({
           color: p.color || '#4f9cf9',
-          lineWidth: 1.5,
+          lineWidth: p.width || 2,
           priceScaleId: scaleId,
-          lastValueVisible: false,
+          title: p.name || '',
           priceLineVisible: false,
         })
         series.setData(p.data)
@@ -1355,35 +1392,40 @@ export default function ChartPanel({
     }
 
     // 3. Render strategy signals on the active series
-    const activeSeries = getActiveSeries()
     if (activeSeries) {
-      if (strategySignals && strategySignals.length > 0) {
+      if (showSignals && strategySignals && strategySignals.length > 0) {
         const markers = strategySignals.map(sig => {
           const type = sig.type?.toUpperCase()
+          const opts = sig.options || {}
+          const labelStyle = opts.style || 'arrow'
+          const labelIcon = opts.icon || 'check'
+
           if (type === 'BUY') {
             return {
               time: sig.time,
-              position: 'belowPrice',
-              color: '#26a69a',
-              shape: 'arrowUp',
-              text: sig.label || 'BUY',
+              position: opts.position === 'above' ? 'aboveBar' : 'belowBar',
+              color: opts.bgColor || '#00c853',
+              shape: labelStyle === 'label-box' ? 'square' : 'arrowUp',
+              text: labelStyle === 'label-box' ? `${labelIcon === 'check' ? '✓ ' : labelIcon === 'circle' ? '● ' : ''}${sig.label || 'BUY'}` : (sig.label || 'BUY'),
               size: 1,
             }
-          } else if (type === 'SELL') {
+          }
+          if (type === 'SELL') {
             return {
               time: sig.time,
-              position: 'abovePrice',
-              color: '#ef5350',
-              shape: 'arrowDown',
-              text: sig.label || 'SELL',
+              position: opts.position === 'below' ? 'belowBar' : 'aboveBar',
+              color: opts.bgColor || '#ef5350',
+              shape: labelStyle === 'label-box' ? 'square' : 'arrowDown',
+              text: labelStyle === 'label-box' ? `${labelIcon === 'circle' ? '● ' : labelIcon === 'check' ? '✓ ' : ''}${sig.label || 'SELL'}` : (sig.label || 'SELL'),
               size: 1,
             }
-          } else if (type === 'CLOSE') {
+          }
+          if (type === 'CLOSE') {
             return {
               time: sig.time,
-              position: 'inBar',
-              color: '#94a3b8',
-              shape: 'circle',
+              position: opts.position === 'below' ? 'belowBar' : 'aboveBar',
+              color: opts.bgColor || '#94a3b8',
+              shape: labelStyle === 'label-box' ? 'square' : 'circle',
               text: sig.label || 'CLOSE',
               size: 0.5,
             }
@@ -1395,8 +1437,25 @@ export default function ChartPanel({
         // Only clear markers if they were set by strategy (or generally clear them if no strategy active)
         activeSeries.setMarkers([])
       }
+
+      // 4. Render horizontal price lines on the axis
+      if (showPlots && strategyLines && strategyLines.length > 0) {
+        strategyLines.forEach(l => {
+          if (l.price !== undefined) {
+            const pl = activeSeries.createPriceLine({
+              price: l.price,
+              color: l.color || '#4f9cf9',
+              lineWidth: 1,
+              lineStyle: l.style === 'solid' ? 0 : l.style === 'dashed' ? 1 : 2, // 0 = Solid, 1 = Dashed, 2 = Dotted
+              axisLabelVisible: true,
+              title: l.label || '',
+            })
+            priceLinesRef.current.push(pl)
+          }
+        })
+      }
     }
-  }, [strategySignals, strategyPlots, dataVersion, chartStyle, getActiveSeries])
+  }, [strategySignals, strategyPlots, strategyLines, dataVersion, chartStyle, getActiveSeries, showPlots, showSignals])
 
   // --- Keyboard handlers for drawings --------
   useEffect(() => {
@@ -1521,8 +1580,9 @@ export default function ChartPanel({
 
     const elements = []
 
-    if (strategyLines && strategyLines.length > 0) {
+    if (showLabels && strategyLines && strategyLines.length > 0) {
       strategyLines.forEach(l => {
+        if (l.x1 === undefined || l.x2 === undefined) return // Skip horizontal priceLines
         const x1 = chart.timeScale().timeToCoordinate(l.x1)
         const y1 = series.priceToCoordinate(l.y1)
         const x2 = chart.timeScale().timeToCoordinate(l.x2)
@@ -1549,18 +1609,15 @@ export default function ChartPanel({
       })
     }
 
-    if (strategyLabels && strategyLabels.length > 0) {
+    if (showLabels && strategyLabels && strategyLabels.length > 0) {
       const ch = container?.offsetHeight || 400
       strategyLabels.forEach(lbl => {
         const x = chart.timeScale().timeToCoordinate(lbl.x)
         const y = series.priceToCoordinate(lbl.y)
 
         if (x == null || y == null) return
-        if (lbl.id.startsWith('sig_') || lbl.id.startsWith('exit_')) {
-          console.log(`[LABEL DBG] id: ${lbl.id}, text: ${lbl.text}, inputY: ${lbl.y}, outputY: ${y}, x: ${x}`)
-        }
 
-        const padding = 6
+        const padding = 4
         let offsetX = x
         let offsetY = y
 
@@ -1572,34 +1629,58 @@ export default function ChartPanel({
         // Clamp y-coordinate to stay within the visible container bounds
         offsetY = Math.max(35, Math.min(offsetY, ch - 20))
 
-        let textAnchor = 'middle'
-        let dominantBaseline = 'middle'
-        if (lbl.position === 'left') textAnchor = 'end'
-        else if (lbl.position === 'right') textAnchor = 'start'
-        else if (lbl.position === 'above') dominantBaseline = 'text-after-edge'
-        else if (lbl.position === 'below') dominantBaseline = 'text-before-edge'
+        // Premium Badge Logic: Estimate width/height, draw filled capsule rect and centered text
+        const txt = lbl.text || ''
+        const textLen = txt.length
+        const rectWidth = textLen * 6.2 + 12
+        const rectHeight = 17
 
-        const strokeColor = lbl.color || '#131722'
+        let rectX = offsetX - rectWidth / 2
+        let rectY = offsetY - rectHeight / 2
+
+        if (lbl.position === 'above') {
+          rectY = offsetY - rectHeight - 2
+        } else if (lbl.position === 'below') {
+          rectY = offsetY + 2
+        } else if (lbl.position === 'left') {
+          rectX = offsetX - rectWidth - 2
+        } else if (lbl.position === 'right') {
+          rectX = offsetX + 2
+        }
+
+        const txtUpper = txt.toUpperCase()
+        const isBuy = txtUpper.includes('BUY') || txtUpper.includes('TP') || txtUpper.includes('ENTRY')
+        const isSell = txtUpper.includes('SELL') || txtUpper.includes('SL') || txtUpper.includes('EXIT')
+
+        const bgColor = isBuy ? '#2e7d32' : isSell ? '#c62828' : '#1e293b'
+        const strokeColor = isBuy ? '#81c784' : isSell ? '#e57373' : '#475569'
 
         elements.push(
           <g key={`s-lbl-${lbl.id}`} pointerEvents="none">
+            {/* Capsule Rect */}
+            <rect
+              x={rectX}
+              y={rectY}
+              width={rectWidth}
+              height={rectHeight}
+              rx="4"
+              fill={bgColor}
+              opacity="0.95"
+              stroke={strokeColor}
+              strokeWidth="1"
+            />
+            {/* Center aligned bold text */}
             <text
-              x={offsetX}
-              y={offsetY}
-              fill={lbl.textColor || '#e2e8f0'}
-              fontSize="10"
-              fontFamily="monospace"
-              textAnchor={textAnchor}
-              dominantBaseline={dominantBaseline}
-              style={{
-                paintOrder: 'stroke',
-                stroke: strokeColor,
-                strokeWidth: '3px',
-                strokeLinecap: 'round',
-                strokeLinejoin: 'round',
-              }}
+              x={rectX + rectWidth / 2}
+              y={rectY + rectHeight / 2 + 1}
+              fill="#ffffff"
+              fontSize="9.5"
+              fontWeight="700"
+              fontFamily="system-ui, -apple-system, sans-serif"
+              textAnchor="middle"
+              dominantBaseline="middle"
             >
-              {lbl.text}
+              {txt}
             </text>
           </g>
         )
@@ -1607,7 +1688,7 @@ export default function ChartPanel({
     }
 
     return elements
-  }, [strategyLines, strategyLabels, visibleRange, chartStyle])
+  }, [strategyLines, strategyLabels, visibleRange, chartStyle, showLabels])
 
   // --- Preview for two-click drawings ---
   const previewElements = useMemo(() => {
@@ -1652,11 +1733,10 @@ export default function ChartPanel({
         {TIMEFRAMES.map(t => (
           <button
             key={t}
-            className={`px-2 py-0.5 rounded text-[11px] border transition-colors whitespace-nowrap ${
-              tf === t
+            className={`px-2 py-0.5 rounded text-[11px] border transition-colors whitespace-nowrap ${tf === t
                 ? 'bg-accent border-accent text-white font-bold'
                 : 'bg-transparent border-border text-muted hover:border-accent'
-            }`}
+              }`}
             onClick={() => handleTFChange(t)}
           >
             {t}
@@ -1763,32 +1843,34 @@ export default function ChartPanel({
 
         {/* Symbol info strip */}
         {activeSymbol && (
-          <div className="absolute top-2 left-14 z-20 pointer-events-none">
+          <div className="absolute top-2 left-14 z-20 pointer-events-auto">
             <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[#131722]/90 border border-[#2a2e39] shadow-lg">
               <span className="text-sm font-bold text-white tracking-wide">{activeSymbol}</span>
-              {tick && (
-                <>
-                  <div className="w-px h-4 bg-[#2a2e39]" />
-                  <span className="text-sm font-bold text-white font-mono tabular-nums">{tick.ltp?.toFixed(2)}</span>
-                  <div className="w-px h-4 bg-[#2a2e39]" />
-                   {tick.close && Number.isFinite(tick.close) ? (() => {
-                    const chg = tick.ltp - tick.close
-                    const pct = (chg / tick.close) * 100
-                    const color = chg >= 0 ? 'text-green' : 'text-red'
-                    return (
+              {tick && (() => {
+                const resolvedSymbol = activeSymbol.toUpperCase().replace(/[\s_-]/g, '')
+                const openPrice = openPrices[instrumentKey] || openPrices[resolvedSymbol] || openPrices[activeSymbol] || tick.close || tick.open || tick.ltp
+                const chg = tick.ltp - openPrice
+                const pct = openPrice && openPrice !== 0 ? (chg / openPrice) * 100 : 0
+                const color = chg >= 0 ? 'text-green' : 'text-red'
+                return (
+                  <>
+                    <div className="w-px h-4 bg-[#2a2e39]" />
+                    <span className="text-sm font-bold text-white font-mono tabular-nums">{tick.ltp?.toFixed(2)}</span>
+                    <div className="w-px h-4 bg-[#2a2e39]" />
+                    {openPrice && Number.isFinite(openPrice) ? (
                       <span className={`text-[11px] font-semibold font-mono tabular-nums ${color}`}>
                         {chg >= 0 ? '+' : ''}{chg.toFixed(2)}
                         {' '}
                         <span className="opacity-80">({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
                       </span>
-                    )
-                  })() : (
-                    <span className="text-[11px] font-semibold font-mono tabular-nums text-muted/60">
-                      0.00 (0.00%)
-                    </span>
-                  )}
-                </>
-              )}
+                    ) : (
+                      <span className="text-[11px] font-semibold font-mono tabular-nums text-muted/60">
+                        0.00 (0.00%)
+                      </span>
+                    )}
+                  </>
+                )
+              })()}
               {/* Candle countdown timer — only visible when live */}
               {isLive && (
                 <>
@@ -1797,25 +1879,151 @@ export default function ChartPanel({
                     <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-green/70 shrink-0">
                       <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
                     </svg>
-                    <span className={`text-[11px] font-mono font-bold tabular-nums ${
-                      countdown.startsWith('0:0') ? 'text-yellow' : 'text-green'
-                    }`}>{countdown}</span>
+                    <span className={`text-[11px] font-mono font-bold tabular-nums ${countdown.startsWith('0:0') ? 'text-yellow' : 'text-green'
+                      }`}>{countdown}</span>
                   </div>
                 </>
               )}
               {/* LIVE / HIST — embedded in strip */}
               <div className="w-px h-4 bg-[#2a2e39]" />
-              <div className={`flex items-center gap-1 text-[10px] font-bold tracking-widest ${
-                isLive ? 'text-green' : 'text-[#4a5068]'
-              }`}>
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                  isLive ? 'bg-green animate-pulse' : 'bg-[#3a3f52]'
-                }`} />
+              <div className={`flex items-center gap-1 text-[10px] font-bold tracking-widest ${isLive ? 'text-green' : 'text-[#4a5068]'
+                }`}>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isLive ? 'bg-green animate-pulse' : 'bg-[#3a3f52]'
+                  }`} />
                 {isLive ? 'LIVE' : 'HIST'}
               </div>
             </div>
           </div>
         )}
+
+        {/* Strategy strip - Rendered below symbol strip */}
+        {activeSymbol && strategyName && (() => {
+          const hasPlots = strategyPlots && strategyPlots.length > 0
+          const hasSignals = strategySignals && strategySignals.length > 0
+          const hasLabels = (strategyLabels && strategyLabels.length > 0) || (strategyLines && strategyLines.length > 0)
+          const hasStats = strategyDashboard && Object.keys(strategyDashboard).length > 0
+
+          return (
+            <div className="absolute top-[38px] left-14 z-20 pointer-events-auto">
+              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-[#131722]/90 border border-[#2a2e39] shadow-lg text-[10.5px] font-semibold text-white">
+                <span className="tracking-wide text-gray-300 font-mono">{strategyName}</span>
+                
+                <div className="w-px h-3 bg-[#2a2e39]" />
+                
+                {/* Eye Visibility Toggle */}
+                <button
+                  onClick={() => {
+                    const target = !showPlots;
+                    setShowPlots(target);
+                    setShowSignals(target);
+                    setShowLabels(target);
+                    setShowStats(target);
+                  }}
+                  className="p-0.5 rounded text-muted hover:text-white transition-colors cursor-pointer"
+                  title={showPlots ? "Hide strategy" : "Show strategy"}
+                >
+                  {showPlots ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>
+                  )}
+                </button>
+                
+                {/* Gear Settings Toggle */}
+                <button
+                  onClick={() => setSettingsOpen(prev => !prev)}
+                  className={`p-0.5 rounded text-muted hover:text-[#4f9cf9] transition-colors cursor-pointer ${settingsOpen ? 'text-[#4f9cf9]' : ''}`}
+                  title="Settings"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                  </svg>
+                </button>
+                
+                {/* Trash/Remove Button */}
+                <button
+                  onClick={onClearStrategy}
+                  className="p-0.5 rounded text-muted hover:text-[#ef5350] transition-colors cursor-pointer"
+                  title="Remove strategy"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    <line x1="10" y1="11" x2="10" y2="17" />
+                    <line x1="14" y1="11" x2="14" y2="17" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Settings Dialog Overlay - TV style popup */}
+              {settingsOpen && (
+                <div className="absolute top-full left-0 mt-1.5 z-50 bg-[#1c2030]/95 border border-[#2a2e39] rounded shadow-2xl p-3 min-w-[200px] font-sans text-[11px] flex flex-col gap-3 select-none text-[#b4c3db]">
+                  <div className="flex justify-between items-center border-b border-[#2a2e39] pb-1.5">
+                    <span className="font-bold text-white uppercase text-[9px] tracking-wider">{strategyName} Settings</span>
+                    <button onClick={() => setSettingsOpen(false)} className="text-muted hover:text-white">✕</button>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    {hasPlots && (
+                      <label className="flex items-center justify-between hover:text-white cursor-pointer py-0.5">
+                        <span>Plots / Indicators</span>
+                        <input
+                          type="checkbox"
+                          checked={showPlots}
+                          onChange={(e) => setShowPlots(e.target.checked)}
+                          className="accent-[#4f9cf9] w-3.5 h-3.5 cursor-pointer"
+                        />
+                      </label>
+                    )}
+
+                    {hasSignals && (
+                      <label className="flex items-center justify-between hover:text-white cursor-pointer py-0.5">
+                        <span>Signals (Buy/Sell)</span>
+                        <input
+                          type="checkbox"
+                          checked={showSignals}
+                          onChange={(e) => setShowSignals(e.target.checked)}
+                          className="accent-[#4f9cf9] w-3.5 h-3.5 cursor-pointer"
+                        />
+                      </label>
+                    )}
+
+                    {hasLabels && (
+                      <label className="flex items-center justify-between hover:text-white cursor-pointer py-0.5">
+                        <span>SL/TP Labels</span>
+                        <input
+                          type="checkbox"
+                          checked={showLabels}
+                          onChange={(e) => setShowLabels(e.target.checked)}
+                          className="accent-[#4f9cf9] w-3.5 h-3.5 cursor-pointer"
+                        />
+                      </label>
+                    )}
+
+                    {hasStats && (
+                      <label className="flex items-center justify-between hover:text-white cursor-pointer py-0.5">
+                        <span>Stats Dashboard</span>
+                        <input
+                          type="checkbox"
+                          checked={showStats}
+                          onChange={(e) => setShowStats(e.target.checked)}
+                          className="accent-[#4f9cf9] w-3.5 h-3.5 cursor-pointer"
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
 
         {/* Drawing mode hint */}
@@ -1844,9 +2052,8 @@ export default function ChartPanel({
             }}
           >
             <div className="flex justify-end items-center pr-[2px]">
-              <div className={`inline-flex items-center justify-center px-2 py-[3px] rounded text-[11px] font-mono font-bold text-white min-w-[46px] shadow ${
-                countdown.startsWith('0:0') ? 'bg-[#c9820a]' : 'bg-[#4f9cf9]'
-              }`}>
+              <div className={`inline-flex items-center justify-center px-2 py-[3px] rounded text-[11px] font-mono font-bold text-white min-w-[46px] shadow ${countdown.startsWith('0:0') ? 'bg-[#c9820a]' : 'bg-[#4f9cf9]'
+                }`}>
                 {countdown}
               </div>
             </div>
@@ -1855,9 +2062,8 @@ export default function ChartPanel({
 
         <svg
           ref={svgRef}
-          className={`absolute left-10 top-0 right-0 bottom-0 z-40 transition-none overflow-hidden ${
-            activeDrawingTool !== 'cursor' ? 'pointer-events-auto' : 'pointer-events-none'
-          } ${activeDrawingTool !== 'cursor' ? 'cursor-crosshair' : ''}`}
+          className={`absolute left-10 top-0 right-0 bottom-0 z-40 transition-none overflow-hidden ${activeDrawingTool !== 'cursor' ? 'pointer-events-auto' : 'pointer-events-none'
+            } ${activeDrawingTool !== 'cursor' ? 'cursor-crosshair' : ''}`}
           style={{ width: 'calc(100% - 40px)', height: '100%', overflow: 'hidden' }}
         >
           {drawingSvgElements}
@@ -1866,7 +2072,7 @@ export default function ChartPanel({
         </svg>
 
         {/* Strategy Dashboard Stats Overlay */}
-        {strategyDashboard && Object.keys(strategyDashboard).length > 0 && (
+        {showStats && strategyDashboard && Object.keys(strategyDashboard).length > 0 && (
           <div className="absolute top-14 left-14 z-20 bg-[#131722]/90 border border-[#2a2e39] rounded-md p-2.5 shadow-lg min-w-[160px] font-mono text-[10px] space-y-1 z-30 pointer-events-auto select-none">
             <div className="text-[9px] text-muted uppercase tracking-wider border-b border-[#2a2e39] pb-1 mb-1 font-bold">
               Strategy Stats
@@ -1884,11 +2090,9 @@ export default function ChartPanel({
 
         <div
           ref={mainChartContainerRef}
-          className={`absolute left-10 top-0 right-0 bottom-0 ${
-            activeDrawingTool !== 'cursor' ? 'pointer-events-none' : ''
-          } ${activeDrawingTool === 'eraser' ? 'cursor-crosshair' : ''} ${
-            activeDrawingTool === 'trend_line' || activeDrawingTool === 'horizontal_line' || activeDrawingTool === 'horizontal_ray' || activeDrawingTool === 'vertical_line' || activeDrawingTool === 'rectangle' || activeDrawingTool === 'fibonacci' || activeDrawingTool === 'text_label' ? 'cursor-crosshair' : ''
-          }`}
+          className={`absolute left-10 top-0 right-0 bottom-0 ${activeDrawingTool !== 'cursor' ? 'pointer-events-none' : ''
+            } ${activeDrawingTool === 'eraser' ? 'cursor-crosshair' : ''} ${activeDrawingTool === 'trend_line' || activeDrawingTool === 'horizontal_line' || activeDrawingTool === 'horizontal_ray' || activeDrawingTool === 'vertical_line' || activeDrawingTool === 'rectangle' || activeDrawingTool === 'fibonacci' || activeDrawingTool === 'text_label' ? 'cursor-crosshair' : ''
+            }`}
         />
       </div>
 

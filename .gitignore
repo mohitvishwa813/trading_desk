@@ -24,3 +24,8 @@ npm-debug.log*
 # Env files (safety)
 .env.*
 !.env.example
+
+# Local SQLite databases
+*.db
+*.db-*
+
