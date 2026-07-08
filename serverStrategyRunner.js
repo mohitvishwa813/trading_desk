@@ -400,59 +400,81 @@ function run(candles, code) {
     }
   }
 
-  const positionState = { size: 0, avgPrice: 0 }
+  const positionState = { size: 0, avgPrice: 0, realizedPnl: 0 }
   let exitRules = null
   let trailingStopState = null
 
+  function triggerExit(i, price, label, qty) {
+    const sizeSign = Math.sign(positionState.size);
+    const absSize = Math.abs(positionState.size);
+    const closeQty = Math.min(qty || absSize, absSize);
+
+    rawSignals.push({
+      barIndex: i,
+      type: 'CLOSE',
+      label,
+      time: candles[i].time,
+      price,
+      options: {
+        qty: closeQty
+      }
+    });
+
+    const tradePnl = positionState.size > 0
+      ? (price - positionState.avgPrice) * closeQty
+      : (positionState.avgPrice - price) * closeQty;
+
+    positionState.realizedPnl += tradePnl;
+    
+    if (closeQty >= absSize) {
+      positionState.size = 0;
+      positionState.avgPrice = 0;
+      exitRules = null;
+      if (trailingStopState) trailingStopState.active = false;
+    } else {
+      positionState.size = (absSize - closeQty) * sizeSign;
+    }
+  }
+
   function checkExits(i) {
-    if (positionState.size === 0) return
-    const c = candles[i]
-    if (!c) return
+    if (positionState.size === 0) return;
+    const c = candles[i];
+    if (!c) return;
 
     if (exitRules) {
       if (positionState.size > 0) {
         if (exitRules.tp && c.high >= exitRules.tp) {
-          rawSignals.push({ barIndex: i, type: 'CLOSE', label: 'TP Hit', time: c.time, price: exitRules.tp })
-          positionState.size = 0
-          exitRules = null
-          return
+          triggerExit(i, exitRules.tp, 'TP Hit', Math.abs(positionState.size));
+          return;
         }
         if (exitRules.sl && c.low <= exitRules.sl) {
-          rawSignals.push({ barIndex: i, type: 'CLOSE', label: 'SL Hit', time: c.time, price: exitRules.sl })
-          positionState.size = 0
-          exitRules = null
-          return
+          triggerExit(i, exitRules.sl, 'SL Hit', Math.abs(positionState.size));
+          return;
         }
       } else {
         if (exitRules.tp && c.low <= exitRules.tp) {
-          rawSignals.push({ barIndex: i, type: 'CLOSE', label: 'TP Hit', time: c.time, price: exitRules.tp })
-          positionState.size = 0
-          exitRules = null
-          return
+          triggerExit(i, exitRules.tp, 'TP Hit', Math.abs(positionState.size));
+          return;
         }
         if (exitRules.sl && c.high >= exitRules.sl) {
-          rawSignals.push({ barIndex: i, type: 'CLOSE', label: 'SL Hit', time: c.time, price: exitRules.sl })
-          positionState.size = 0
-          exitRules = null
-          return
+          triggerExit(i, exitRules.sl, 'SL Hit', Math.abs(positionState.size));
+          return;
         }
       }
     }
 
     if (trailingStopState && trailingStopState.active) {
       if (positionState.size > 0) {
-        trailingStopState.highestPrice = Math.max(trailingStopState.highestPrice, c.high)
-        const stopLevel = trailingStopState.highestPrice * (1 - trailingStopState.trailPercent / 100)
+        trailingStopState.highestPrice = Math.max(trailingStopState.highestPrice, c.high);
+        const stopLevel = trailingStopState.highestPrice * (1 - trailingStopState.trailPercent / 100);
         if (c.low <= stopLevel) {
-          rawSignals.push({ barIndex: i, type: 'CLOSE', label: 'Trailing SL Hit', time: c.time, price: stopLevel })
-          positionState.size = 0
+          triggerExit(i, stopLevel, 'Trailing SL Hit', Math.abs(positionState.size));
         }
       } else {
-        trailingStopState.lowestPrice = Math.min(trailingStopState.lowestPrice, c.low)
-        const stopLevel = trailingStopState.lowestPrice * (1 + trailingStopState.trailPercent / 100)
+        trailingStopState.lowestPrice = Math.min(trailingStopState.lowestPrice, c.low);
+        const stopLevel = trailingStopState.lowestPrice * (1 + trailingStopState.trailPercent / 100);
         if (c.high >= stopLevel) {
-          rawSignals.push({ barIndex: i, type: 'CLOSE', label: 'Trailing SL Hit', time: c.time, price: stopLevel })
-          positionState.size = 0
+          triggerExit(i, stopLevel, 'Trailing SL Hit', Math.abs(positionState.size));
         }
       }
     }
@@ -463,21 +485,32 @@ function run(candles, code) {
       get size() { return positionState.size },
       get avgPrice() { return positionState.avgPrice }
     },
-    get equity() { return 100000 },
+    get equity() { return 100000 + positionState.realizedPnl },
     buy: (i, label = 'Buy', options = {}) => {
       if (i < 0 || i >= candles.length) return
       currentBarIndex = i
       checkExits(i)
+
+      if (positionState.size > 0) {
+        return; // single active trade constraint
+      }
+
       const qty = options.qty || 1
       const price = candles[i].close
 
       if (positionState.size < 0) {
         const absSize = Math.abs(positionState.size)
+        const closedQty = Math.min(qty, absSize)
+        positionState.realizedPnl += (positionState.avgPrice - price) * closedQty
+
         if (qty > absSize) {
           positionState.size = qty - absSize
           positionState.avgPrice = price
+        } else if (qty < absSize) {
+          positionState.size = positionState.size + qty
         } else {
-          positionState.size += qty
+          positionState.size = 0
+          positionState.avgPrice = 0
         }
       } else {
         positionState.avgPrice = ((positionState.avgPrice * positionState.size) + (price * qty)) / (positionState.size + qty)
@@ -490,15 +523,26 @@ function run(candles, code) {
       if (i < 0 || i >= candles.length) return
       currentBarIndex = i
       checkExits(i)
+
+      if (positionState.size < 0) {
+        return; // single active trade constraint
+      }
+
       const qty = options.qty || 1
       const price = candles[i].close
 
       if (positionState.size > 0) {
+        const closedQty = Math.min(qty, positionState.size)
+        positionState.realizedPnl += (price - positionState.avgPrice) * closedQty
+
         if (qty > positionState.size) {
           positionState.size = -(qty - positionState.size)
           positionState.avgPrice = price
-        } else {
+        } else if (qty < positionState.size) {
           positionState.size -= qty
+        } else {
+          positionState.size = 0
+          positionState.avgPrice = 0
         }
       } else {
         const absSize = Math.abs(positionState.size)
@@ -508,11 +552,11 @@ function run(candles, code) {
 
       rawSignals.push({ barIndex: i, type: 'SELL', label, time: candles[i].time, price })
     },
-    close: (i, label = 'Close') => {
+    close: (i, label = 'Close', options = {}) => {
       if (i < 0 || i >= candles.length || positionState.size === 0) return
       currentBarIndex = i
-      rawSignals.push({ barIndex: i, type: 'CLOSE', label, time: candles[i].time, price: candles[i].close })
-      positionState.size = 0
+      const qty = options.qty || Math.abs(positionState.size)
+      triggerExit(i, candles[i].close, label, qty)
     },
     exit: (i, opts = {}) => {
       if (i < 0 || i >= candles.length) return
@@ -542,7 +586,7 @@ function run(candles, code) {
 
   const plot = () => {}
   const chart = { drawLine: () => {}, drawLabel: () => {}, priceLine: () => {}, marker: () => {} }
-  const dashboard = { set: () => {} }
+  const dashboard = { set: () => {}, table: () => {} }
 
   try {
     const fn = new Function('bars', 'open', 'high', 'low', 'close', 'volume', 'ta', 'strategy', 'plot', 'chart', 'dashboard', code)

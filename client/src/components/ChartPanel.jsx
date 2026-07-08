@@ -1338,10 +1338,16 @@ export default function ChartPanel({
     if (!chart) return
     const activeSeries = getActiveSeries()
 
-    // Remove old price lines
-    if (activeSeries && priceLinesRef.current) {
-      priceLinesRef.current.forEach(pl => {
-        try { activeSeries.removePriceLine(pl) } catch { /* ok */ }
+    // Remove old price lines from ALL series
+    if (priceLinesRef.current) {
+      priceLinesRef.current.forEach(item => {
+        try {
+          if (item && item.series && item.pl) {
+            item.series.removePriceLine(item.pl);
+          } else if (activeSeries) {
+            activeSeries.removePriceLine(item);
+          }
+        } catch { /* ok */ }
       })
       priceLinesRef.current = []
     }
@@ -1450,7 +1456,7 @@ export default function ChartPanel({
               axisLabelVisible: true,
               title: l.label || '',
             })
-            priceLinesRef.current.push(pl)
+            priceLinesRef.current.push({ series: activeSeries, pl })
           }
         })
       }
@@ -2073,18 +2079,51 @@ export default function ChartPanel({
 
         {/* Strategy Dashboard Stats Overlay */}
         {showStats && strategyDashboard && Object.keys(strategyDashboard).length > 0 && (
-          <div className="absolute top-14 left-14 z-20 bg-[#131722]/90 border border-[#2a2e39] rounded-md p-2.5 shadow-lg min-w-[160px] font-mono text-[10px] space-y-1 z-30 pointer-events-auto select-none">
-            <div className="text-[9px] text-muted uppercase tracking-wider border-b border-[#2a2e39] pb-1 mb-1 font-bold">
+          <div className="absolute top-14 right-14 z-20 bg-[#131722]/90 border border-[#2a2e39] rounded-md p-2.5 shadow-lg min-w-[180px] max-w-[340px] max-h-[70vh] overflow-y-auto font-mono text-[10px] space-y-2 z-30 pointer-events-auto select-none">
+            <div className="text-[9px] text-muted uppercase tracking-wider border-b border-[#2a2e39] pb-1 font-bold">
               Strategy Stats
             </div>
-            {Object.entries(strategyDashboard).map(([lbl, row]) => (
-              <div key={lbl} className="flex justify-between items-center gap-4 py-0.5">
-                <span className="text-[#94a3b8]">{lbl}</span>
-                <span style={{ color: row.color || '#e2e8f0' }} className="font-bold">
-                  {row.value}
-                </span>
-              </div>
-            ))}
+            {Object.entries(strategyDashboard).map(([lbl, row]) => {
+              if (row && row.type === 'table') {
+                return (
+                  <div key={lbl} className="border-t border-[#2a2e39] pt-2 mt-2">
+                    <div className="text-[9px] text-[#7c6af7] font-extrabold uppercase tracking-wide mb-1">{lbl}</div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse border border-[#2a2e39]/60 text-[9px] text-slate-300">
+                        {row.headers && row.headers.length > 0 && (
+                          <thead>
+                            <tr className="bg-[#1f222e]">
+                              {row.headers.map((h, i) => (
+                                <th key={i} className="px-1.5 py-0.5 border border-[#2a2e39] text-[#94a3b8] font-bold">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                        )}
+                        <tbody>
+                          {row.rows && row.rows.map((r, ri) => (
+                            <tr key={ri} className={ri % 2 === 0 ? 'bg-[#0f111a]' : 'bg-[#151722]'}>
+                              {Array.isArray(r) ? r.map((c, ci) => (
+                                <td key={ci} className="px-1.5 py-0.5 border border-[#2a2e39]">{String(c)}</td>
+                              )) : Object.values(r).map((c, ci) => (
+                                <td key={ci} className="px-1.5 py-0.5 border border-[#2a2e39]">{String(c)}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              }
+              return (
+                <div key={lbl} className="flex justify-between items-center gap-4 py-0.5">
+                  <span className="text-[#94a3b8]">{lbl}</span>
+                  <span style={{ color: row.color || '#e2e8f0' }} className="font-bold">
+                    {row.value}
+                  </span>
+                </div>
+              )
+            })}
           </div>
         )}
 

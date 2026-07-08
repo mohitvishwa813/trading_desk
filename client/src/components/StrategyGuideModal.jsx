@@ -280,7 +280,7 @@ for (let i = 50; i < bars.length; i++) {
               <div className="space-y-3">
                 <div className="border-b border-[#1b1e2a]/50 pb-3">
                   <span className="font-bold text-white font-mono block">strategy.buy(index, label, options?)</span>
-                  <span className="text-muted text-[10.5px] block mt-0.5">Triggers entry BUY order.</span>
+                  <span className="text-muted text-[10.5px] block mt-0.5">Triggers entry BUY order. Single position rule is enforced automatically.</span>
                   <div className="relative group mt-1">
                     <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`strategy.buy(i, 'Long Entry', { qty: 10, style: 'label-box' });`}</pre>
                     <CopyButton text="strategy.buy(i, 'Long Entry', { qty: 10, style: 'label-box' });" />
@@ -289,19 +289,46 @@ for (let i = 50; i < bars.length; i++) {
 
                 <div className="border-b border-[#1b1e2a]/50 pb-3">
                   <span className="font-bold text-white font-mono block">strategy.sell(index, label, options?)</span>
-                  <span className="text-muted text-[10.5px] block mt-0.5">Triggers entry SELL (short) order.</span>
+                  <span className="text-muted text-[10.5px] block mt-0.5">Triggers entry SELL (short) order. Single position rule is enforced automatically.</span>
                   <div className="relative group mt-1">
                     <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`strategy.sell(i, 'Short Entry', { qty: 10 });`}</pre>
                     <CopyButton text="strategy.sell(i, 'Short Entry', { qty: 10 });" />
                   </div>
                 </div>
 
-                <div className="pb-2">
-                  <span className="font-bold text-white font-mono block">strategy.close(index, label)</span>
-                  <span className="text-muted text-[10.5px] block mt-0.5">Closes any open positions flat at the current close price.</span>
+                <div className="border-b border-[#1b1e2a]/50 pb-3">
+                  <span className="font-bold text-white font-mono block">strategy.close(index, label, options?)</span>
+                  <span className="text-muted text-[10.5px] block mt-0.5">Closes active position. Pass <code className="text-white">qty</code> option for partial profit taking exits (e.g. 50% exit).</span>
                   <div className="relative group mt-1">
-                    <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`strategy.close(i, 'Take Profit Exit');`}</pre>
-                    <CopyButton text="strategy.close(i, 'Take Profit Exit');" />
+                    <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`strategy.close(i, 'Partial Exit', { qty: 5 });`}</pre>
+                    <CopyButton text="strategy.close(i, 'Partial Exit', { qty: 5 });" />
+                  </div>
+                </div>
+
+                <div className="border-b border-[#1b1e2a]/50 pb-3">
+                  <span className="font-bold text-white font-mono block">strategy.exit(index, options)</span>
+                  <span className="text-muted text-[10.5px] block mt-0.5">Registers automated Stop Loss (sl) and Take Profit (tp) bracket order targets.</span>
+                  <div className="relative group mt-1">
+                    <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`strategy.exit(i, { sl: 2540, tp: 2600 });`}</pre>
+                    <CopyButton text="strategy.exit(i, { sl: 2540, tp: 2600 });" />
+                  </div>
+                </div>
+
+                <div className="border-b border-[#1b1e2a]/50 pb-3">
+                  <span className="font-bold text-white font-mono block">strategy.trailingStop(options)</span>
+                  <span className="text-muted text-[10.5px] block mt-0.5">Sets trailing stop percent trigger.</span>
+                  <div className="relative group mt-1">
+                    <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`strategy.trailingStop({ trailPercent: 1.5 });`}</pre>
+                    <CopyButton text="strategy.trailingStop({ trailPercent: 1.5 });" />
+                  </div>
+                </div>
+
+                <div className="pb-2">
+                  <span className="font-bold text-white font-mono block">strategy.alert(condition, options)</span>
+                  <span className="text-muted text-[10.5px] block mt-0.5">Triggers webhooks and webhook alerts. You **must** pass a unique <code className="text-white">id</code> in the options object to avoid de-duplication filtering. Supports template parameters like <code className="text-white">{"{{close}}"}</code>, <code className="text-white">{"{{time}}"}</code>.</span>
+                  <div className="relative group mt-1">
+                    <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`strategy.alert(true, { id: 'buy_alert_' + i, message: 'Long entry triggered at price {{close}}' });`}</pre>
+                    <CopyButton text="strategy.alert(true, { id: 'buy_alert_' + i, message: 'Long entry triggered at price {{close}}' });" />
                   </div>
                 </div>
               </div>
@@ -309,7 +336,7 @@ for (let i = 50; i < bars.length; i++) {
 
             {/* 6. Visual Drawings */}
             <div id="sec-drawings" className="space-y-4 pt-2 pb-12">
-              <h4 className="text-sm font-extrabold text-white uppercase tracking-wider border-b border-[#1b1e2a] pb-2">6. Visual Drawings reference (chart.*)</h4>
+              <h4 className="text-sm font-extrabold text-white uppercase tracking-wider border-b border-[#1b1e2a] pb-2">6. Visual Drawings reference (chart.* & dashboard.*)</h4>
               <div className="space-y-3">
                 <div className="border-b border-[#1b1e2a]/50 pb-3">
                   <span className="font-bold text-white font-mono block">plot(series, name, color)</span>
@@ -326,6 +353,15 @@ for (let i = 50; i < bars.length; i++) {
                   <div className="relative group mt-1">
                     <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`chart.priceLine("TargetLine", 65200, { label: "Target: 65200", color: "#00c853" });`}</pre>
                     <CopyButton text={`chart.priceLine("TargetLine", 65200, { label: "Target: 65200", color: "#00c853" });`} />
+                  </div>
+                </div>
+
+                <div className="pb-2">
+                  <span className="font-bold text-white font-mono block">dashboard.table(id, rows, options)</span>
+                  <span className="text-muted text-[10.5px] block mt-0.5">Renders custom tabular overlays (like multi-timeframe metric summaries) on the chart panel.</span>
+                  <div className="relative group mt-1">
+                    <pre className="bg-[#05060b] p-2 rounded text-[11px] font-mono text-emerald-400">{`dashboard.table("MTF_Status", [ ["5m", "UPTREND", "BUY"], ["15m", "DOWNTREND", "SELL"] ], { headers: ["TF", "Trend", "Signal"] });`}</pre>
+                    <CopyButton text={`dashboard.table("MTF_Status", [ ["5m", "UPTREND", "BUY"], ["15m", "DOWNTREND", "SELL"] ], { headers: ["TF", "Trend", "Signal"] });`} />
                   </div>
                 </div>
               </div>

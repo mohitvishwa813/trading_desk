@@ -140,6 +140,9 @@ export default function Sidebar({
             alerts={alerts}
             webhookStatus={webhookStatus}
             tradesRefreshKey={tradesRefreshKey}
+            prices={prices}
+            activeSymbol={activeSymbol}
+            price={price}
           />
         )}
       </div>
@@ -168,7 +171,7 @@ function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instr
 /* ================================================================== */
 /*  LOG TAB — Alert log & Webhook Logs                                  */
 /* ================================================================== */
-function LogTabContent({ alerts, webhookStatus, tradesRefreshKey }) {
+function LogTabContent({ alerts, webhookStatus, tradesRefreshKey, prices, activeSymbol, price }) {
   const [bottomTab, setBottomTab] = useState('alerts') // 'alerts' | 'journal'
   const [trades, setTrades] = useState([])
   const [tradesLoading, setTradesLoading] = useState(false)
@@ -207,7 +210,7 @@ function LogTabContent({ alerts, webhookStatus, tradesRefreshKey }) {
               ${bottomTab === 'journal' ? 'text-accent bg-[#151922]' : 'text-muted hover:text-white bg-transparent'}
             `}
           >
-            make.com logs
+            Trade Journal
           </button>
         </div>
       </div>
@@ -217,7 +220,7 @@ function LogTabContent({ alerts, webhookStatus, tradesRefreshKey }) {
         {bottomTab === 'alerts' ? (
           <AlertLog alerts={alerts} />
         ) : (
-          <TradeJournal trades={trades} loading={tradesLoading} />
+          <TradeJournal trades={trades} loading={tradesLoading} prices={prices} activeSymbol={activeSymbol} price={price} />
         )}
       </div>
       <WebhookPanel status={webhookStatus} />
@@ -225,7 +228,7 @@ function LogTabContent({ alerts, webhookStatus, tradesRefreshKey }) {
   )
 }
 
-function TradeJournal({ trades, loading }) {
+function TradeJournal({ trades, loading, prices, activeSymbol, price }) {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 p-6 text-muted text-xs">
@@ -253,6 +256,16 @@ function TradeJournal({ trades, loading }) {
         const isClosed = t.status.toUpperCase() === 'CLOSED'
         const pnlColor = t.pnl > 0 ? 'text-[#00e676]' : t.pnl < 0 ? 'text-[#ff1744]' : 'text-slate-400'
 
+        // Resolve current price from WebSocket tick streams
+        const currentPrice = (prices && prices[t.symbol]) || (t.symbol === activeSymbol ? price : null);
+
+        let livePnl = null;
+        let livePnlColor = 'text-slate-400';
+        if (!isClosed && currentPrice) {
+          livePnl = isBuy ? (currentPrice - t.price) * t.qty : (t.price - currentPrice) * t.qty;
+          livePnlColor = livePnl > 0 ? 'text-[#00e676]' : livePnl < 0 ? 'text-[#ff1744]' : 'text-slate-400';
+        }
+
         return (
           <div key={t.id} className="p-2 bg-[#12151e] border border-[#1e2332] rounded flex flex-col gap-1">
             <div className="flex justify-between items-center">
@@ -264,15 +277,23 @@ function TradeJournal({ trades, loading }) {
             
             <div className="flex justify-between text-[10px] text-muted">
               <span>Qty: {t.qty}</span>
-              <span>Entry: {t.price}</span>
+              <span>Entry: {t.price.toFixed(2)}</span>
             </div>
 
             <div className="flex justify-between text-[10px] text-muted border-t border-border/20 pt-1 mt-0.5">
-              <span>Status: <span className={isClosed ? 'text-slate-400' : 'text-yellow'}>{t.status}</span></span>
-              {isClosed && (
+              <span>Status: <span className={isClosed ? 'text-slate-400' : 'text-amber-500 font-bold animate-pulse'}>{t.status}</span></span>
+              {isClosed ? (
                 <span>
-                  P&L: <span className={`font-bold ${pnlColor}`}>{t.pnl > 0 ? `+${t.pnl}` : t.pnl}</span>
+                  P&L: <span className={`font-bold ${pnlColor}`}>{t.pnl > 0 ? `+${t.pnl.toFixed(2)}` : t.pnl.toFixed(2)}</span>
                 </span>
+              ) : (
+                currentPrice ? (
+                  <span>
+                    Float P&L: <span className={`font-bold ${livePnlColor}`}>{livePnl > 0 ? `+${livePnl.toFixed(2)}` : livePnl.toFixed(2)}</span>
+                  </span>
+                ) : (
+                  <span className="text-[9px] text-[#4f5260] italic">Waiting for tick...</span>
+                )
               )}
             </div>
             
@@ -636,11 +657,12 @@ async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, trigg
 /*  ALERT LOG                                                           */
 /* ================================================================== */
 function parseAlertTradeDetails(message) {
-  const regex = /\[(?:Paper|Live)\s+(BUY|SELL)\]\s+(\d+)\s+([A-Z0-9]+)?\s*@\s*₹?([\d.]+)/i;
+  const regex = /\[(?:Paper|Live)\s+(BUY|SELL|CLOSE_BUY|CLOSE_SELL)\]\s+(\d+)\s+([A-Z0-9]+)?\s*@\s*₹?([\d.]+)/i;
   const match = message.match(regex);
   if (match) {
+    const side = match[1].toUpperCase();
     return {
-      side: match[1].toUpperCase(),
+      side: side.startsWith('CLOSE') ? (side === 'CLOSE_BUY' ? 'SELL' : 'BUY') : side,
       qty: parseInt(match[2], 10),
       price: parseFloat(match[4])
     };

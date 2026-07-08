@@ -993,6 +993,8 @@ async function fetchCandlesInternal(symbol, tf) {
 
 // Map to track the active trade ID per auto trade session (for alert grouping)
 const sessionActiveTrades = {};
+// Map to track the last executed signal in-memory (time & type) per session to prevent duplicates
+const sessionExecutedSignals = {};
 
 function convertToHeikinAshi(candles) {
   if (!Array.isArray(candles) || candles.length === 0) return [];
@@ -1058,15 +1060,33 @@ async function processAutoTrades() {
       // 4. Run strategy code on server
       const result = serverStrategyRunner.run(candles, strat.code);
 
-      // 5. Check latest signal
+      // 5. Initialize session tracker in memory if not present
+      if (!sessionExecutedSignals[session.id]) {
+        sessionExecutedSignals[session.id] = {
+          lastTime: session.last_signal_time || 0,
+          lastType: null
+        };
+      }
+
+      const tracker = sessionExecutedSignals[session.id];
+
+      // 6. Find all fresh, un-executed signals chronologically
       if (result.signals && result.signals.length > 0) {
-        const latestSignal = result.signals[result.signals.length - 1];
         const lastCandleTime = candles[candles.length - 1].time;
 
-        // Signal must be fresh and not executed yet
-        if (latestSignal.time >= lastCandleTime - 120 && session.last_signal_time !== latestSignal.time) {
-          const side = latestSignal.type.toUpperCase();
-          const executionPrice = latestSignal.price || candles[candles.length - 1].close;
+        const pendingSignals = result.signals.filter(sig => {
+          // A. Signal must be fresh (within 2 minutes of the last candle time)
+          if (sig.time < lastCandleTime - 120) return false;
+          // B. Signal time must be greater than or equal to last executed time
+          if (sig.time < tracker.lastTime) return false;
+          // C. If signal matches the last executed time, the type must be different
+          if (sig.time === tracker.lastTime && sig.type === tracker.lastType) return false;
+          return true;
+        });
+
+        for (const sig of pendingSignals) {
+          const side = sig.type.toUpperCase();
+          const executionPrice = sig.price || candles[candles.length - 1].close;
 
           console.log(`[Server AutoTrade] Triggering ${side} signal for ${session.symbol} in session ${session.id}`);
 
@@ -1077,19 +1097,21 @@ async function processAutoTrades() {
             sessionActiveTrades[session.id] = assignedTradeId;
           }
 
-          // If the signal is a close, clear the active trade mapping after logging
           const isCloseSignal = side === 'CLOSE' || side === 'EXIT';
 
           if (session.mode === 'PAPER') {
-            const oppDir = side === 'BUY' ? 'SELL' : 'BUY';
+            // Find active open position to close
             const openResult = await db.execute({
-              sql: 'SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND direction = ? AND status = ? ORDER BY created_at ASC LIMIT 1',
-              args: [session.user_id, session.symbol, oppDir, 'OPEN']
+              sql: isCloseSignal 
+                ? 'SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND status = ? ORDER BY created_at ASC LIMIT 1'
+                : 'SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND direction = ? AND status = ? ORDER BY created_at ASC LIMIT 1',
+              args: isCloseSignal
+                ? [session.user_id, session.symbol, 'OPEN']
+                : [session.user_id, session.symbol, side === 'BUY' ? 'SELL' : 'BUY', 'OPEN']
             });
 
             if (openResult.rows.length > 0) {
               const activeTrade = openResult.rows[0];
-              // Link alerts to the original opening trade ID for grouping
               assignedTradeId = activeTrade.id;
               const oldPrice = activeTrade.price;
               const closedQty = Math.min(session.qty, activeTrade.qty);
@@ -1125,8 +1147,17 @@ async function processAutoTrades() {
                   args: [closedId, session.user_id, session.symbol, activeTrade.direction, session.qty, activeTrade.price, 'CLOSED', tradePnl, activeTrade.created_at, new Date().toISOString(), 'Partially closed']
                 });
               }
-            } else {
-              // Open new position
+
+              // Log corresponding close alert
+              const alertId = `a_pt_${Date.now()}`;
+              const displaySide = `CLOSE_${activeTrade.direction}`;
+              const alertMsg = `[Paper ${displaySide}] ${closedQty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
+              await db.execute({
+                sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
+              });
+            } else if (!isCloseSignal) {
+              // Open new position (only if it is a BUY/SELL signal)
               const newPositionId = `pt_${Date.now()}`;
               assignedTradeId = newPositionId;
               sessionActiveTrades[session.id] = newPositionId;
@@ -1135,15 +1166,15 @@ async function processAutoTrades() {
                 sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 args: [newPositionId, session.user_id, session.symbol, side, session.qty, executionPrice, 'OPEN', new Date().toISOString(), `Auto Trade opened via: ${strat.name}`]
               });
-            }
 
-            // Log corresponding alert
-            const alertId = `a_pt_${Date.now()}`;
-            const alertMsg = `[Paper ${side}] ${session.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
-            await db.execute({
-              sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
-            });
+              // Log corresponding entry alert
+              const alertId = `a_pt_${Date.now()}`;
+              const alertMsg = `[Paper ${side}] ${session.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
+              await db.execute({
+                sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
+              });
+            }
           } else {
             // Live webhook
             const targetWebhook = process.env.DISCORD_TELEGRAM_WEBHOOK_URL || MAKE_WEBHOOK_URL;
@@ -1165,13 +1196,18 @@ async function processAutoTrades() {
             }
           }
 
-          // Update execution state in DB
+          // Update execution state in memory and DB
+          tracker.lastTime = sig.time;
+          tracker.lastType = sig.type;
+
           await db.execute({
             sql: 'UPDATE auto_trades SET last_signal_time = ? WHERE id = ?',
-            args: [latestSignal.time, session.id]
+            args: [sig.time, session.id]
           });
+        }
 
-          // Broadcast update to all client UI instances
+        // Broadcast update to all client UI instances if we processed any new signals
+        if (pendingSignals.length > 0) {
           const updateMsg = JSON.stringify({ type: 'autotrade_update', symbol: session.symbol });
           for (const client of browserClients) {
             if (client.readyState === WebSocket.OPEN) {
