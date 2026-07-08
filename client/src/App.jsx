@@ -177,9 +177,11 @@ export default function App() {
   const [symbolMap, setSymbolMap] = useState({})
   const [symbolsReady, setSymbolsReady] = useState(false)
 
-  // Fetch symbol map on mount
+  // Fetch symbol map and user settings on mount
   useEffect(() => {
     if (!isAuthenticated) return
+    
+    // Fetch symbols mapping
     fetch('/api/instruments/symbols')
       .then(r => r.json())
       .then(data => {
@@ -187,6 +189,21 @@ export default function App() {
         setSymbolsReady(true)
       })
       .catch(() => {})
+
+    // Fetch synced user settings
+    fetch('/api/user/settings', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.watchlist && data.watchlist.length > 0) {
+          setWatchlistItems(data.watchlist)
+        }
+        if (data.ticker && data.ticker.length > 0) {
+          setTickerItems(data.ticker)
+        }
+      })
+      .catch(err => console.error('Error fetching user settings:', err))
   }, [isAuthenticated])
 
   // Sync mode from server on mount
@@ -442,7 +459,18 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('tickerItems_v4', JSON.stringify(tickerItems))
-  }, [tickerItems])
+    if (isAuthenticated) {
+      const token = localStorage.getItem('token')
+      fetch('/api/user/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ ticker: tickerItems })
+      }).catch(err => console.error('Error saving ticker items:', err))
+    }
+  }, [tickerItems, isAuthenticated])
 
   // ── Styles (lifted from ChartPanel to control globally in header) ──
   const [chartStyles, setChartStyles] = useState(() => {
@@ -556,7 +584,18 @@ export default function App() {
   // ── Persist watchlist ──
   useEffect(() => {
     localStorage.setItem('watchlistItems', JSON.stringify(watchlistItems))
-  }, [watchlistItems])
+    if (isAuthenticated) {
+      const token = localStorage.getItem('token')
+      fetch('/api/user/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ watchlist: watchlistItems })
+      }).catch(err => console.error('Error saving watchlist:', err))
+    }
+  }, [watchlistItems, isAuthenticated])
 
   // ── Resizable sidebar ──
   const SIDEBAR_MIN = 220

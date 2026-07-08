@@ -866,13 +866,50 @@ app.get('/api/autotrade/status', authenticateToken, async (req, res) => {
 
 // ─── Server-Side Persistent Auto-Trading Engine ──────────────────────────────
 
-// Helper function to fetch candles internally matching endpoint logic
-async function fetchCandlesInternal(symbol, tf) {
+// Helper to resolve symbol to instrument key with fuzzy fallback for various text formats
+function resolveSymbolToKey(symbol) {
+  if (!symbol) return '';
   let cleanSymbol = symbol.toUpperCase().replace(/[\s_-]/g, '');
   if (cleanSymbol === 'NIFTY50') cleanSymbol = 'NIFTY';
   if (cleanSymbol === 'STATEBANK' || cleanSymbol === 'STATEBANKOFINDIA') cleanSymbol = 'SBIN';
 
-  const instrumentKey = symbolToKey[cleanSymbol] || symbolToKey[symbol.toUpperCase()] || symbol;
+  // 1. Try exact lookup in symbolToKey dictionary
+  let key = symbolToKey[cleanSymbol] || symbolToKey[symbol.toUpperCase()];
+  if (key) return key;
+
+  // 2. Try match by cleaning and comparing
+  for (const inst of instrumentsList) {
+    const cleanInstTsym = inst.tradingsymbol.toUpperCase().replace(/[\s_-]/g, '');
+    if (cleanInstTsym === cleanSymbol) {
+      return inst.instrument_key;
+    }
+  }
+
+  // 3. Try to resolve MCX/NSE spaces format to trading symbol format
+  // Format A: "BASE FUT DD MMM YY" -> e.g. "CRUDEOILM FUT 20 JUL 26"
+  const futMatchA = symbol.match(/([A-Z0-9]+)\s+FUT\s+(\d+)\s+([A-Z]+)\s+(\d+)/i);
+  if (futMatchA) {
+    const [_, base, day, month, year] = futMatchA;
+    const parsedTsym = `${base.toUpperCase()}${day}${month.toUpperCase()}${year}FUT`;
+    const found = instrumentsList.find(inst => inst.tradingsymbol.toUpperCase() === parsedTsym);
+    if (found) return found.instrument_key;
+  }
+
+  // Format B: "BASE DD MMM YY FUT" -> e.g. "CRUDEOILM 20 JUL 26 FUT"
+  const futMatchB = symbol.match(/([A-Z0-9]+)\s+(\d+)\s+([A-Z]+)\s+(\d+)\s+FUT/i);
+  if (futMatchB) {
+    const [_, base, day, month, year] = futMatchB;
+    const parsedTsym = `${base.toUpperCase()}${day}${month.toUpperCase()}${year}FUT`;
+    const found = instrumentsList.find(inst => inst.tradingsymbol.toUpperCase() === parsedTsym);
+    if (found) return found.instrument_key;
+  }
+
+  return symbol;
+}
+
+// Helper function to fetch candles internally matching endpoint logic
+async function fetchCandlesInternal(symbol, tf) {
+  const instrumentKey = resolveSymbolToKey(symbol);
 
   const getCoinbaseGranularity = (tframe) => {
     switch (tframe) {
@@ -1064,11 +1101,15 @@ async function processAutoTrades() {
       if (!sessionExecutedSignals[session.id]) {
         sessionExecutedSignals[session.id] = {
           lastTime: session.last_signal_time || 0,
-          lastType: null
+          executedTypes: new Set()
         };
       }
 
       const tracker = sessionExecutedSignals[session.id];
+      // Ensure executedTypes is a Set (handles migration in case it was a legacy object)
+      if (!(tracker.executedTypes instanceof Set)) {
+        tracker.executedTypes = new Set();
+      }
 
       // 6. Find all fresh, un-executed signals chronologically
       if (result.signals && result.signals.length > 0) {
@@ -1079,8 +1120,8 @@ async function processAutoTrades() {
           if (sig.time < lastCandleTime - 120) return false;
           // B. Signal time must be greater than or equal to last executed time
           if (sig.time < tracker.lastTime) return false;
-          // C. If signal matches the last executed time, the type must be different
-          if (sig.time === tracker.lastTime && sig.type === tracker.lastType) return false;
+          // C. If signal matches the last executed time, the type must not have been executed yet
+          if (sig.time === tracker.lastTime && tracker.executedTypes.has(sig.type.toUpperCase())) return false;
           return true;
         });
 
@@ -1197,8 +1238,11 @@ async function processAutoTrades() {
           }
 
           // Update execution state in memory and DB
-          tracker.lastTime = sig.time;
-          tracker.lastType = sig.type;
+          if (sig.time > tracker.lastTime) {
+            tracker.lastTime = sig.time;
+            tracker.executedTypes.clear(); // Clear types for a new candle time
+          }
+          tracker.executedTypes.add(sig.type.toUpperCase());
 
           await db.execute({
             sql: 'UPDATE auto_trades SET last_signal_time = ? WHERE id = ?',
@@ -1974,6 +2018,59 @@ function stopDemoTicks() {
     demoInterval = null;
   }
 }
+
+// ─── User Settings Sync Endpoints ───────────────────────────────────────────
+app.get('/api/user/settings', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT * FROM user_settings WHERE user_id = ?',
+      args: [req.user.id]
+    });
+    
+    if (result.rows.length === 0) {
+      // Return empty settings defaults if not set yet
+      return res.json({
+        watchlist: [],
+        ticker: [],
+        paper_positions: []
+      });
+    }
+
+    const row = result.rows[0];
+    res.json({
+      watchlist: row.watchlist ? JSON.parse(row.watchlist) : [],
+      ticker: row.ticker ? JSON.parse(row.ticker) : [],
+      paper_positions: row.paper_positions ? JSON.parse(row.paper_positions) : []
+    });
+  } catch (err) {
+    console.error('Error fetching user settings:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/user/settings', authenticateToken, async (req, res) => {
+  const { watchlist, ticker, paper_positions } = req.body || {};
+  try {
+    const currentResult = await db.execute({
+      sql: 'SELECT * FROM user_settings WHERE user_id = ?',
+      args: [req.user.id]
+    });
+
+    let finalWatchlist = watchlist !== undefined ? JSON.stringify(watchlist) : (currentResult.rows[0]?.watchlist || '[]');
+    let finalTicker = ticker !== undefined ? JSON.stringify(ticker) : (currentResult.rows[0]?.ticker || '[]');
+    let finalPaperPositions = paper_positions !== undefined ? JSON.stringify(paper_positions) : (currentResult.rows[0]?.paper_positions || '[]');
+
+    await db.execute({
+      sql: 'INSERT OR REPLACE INTO user_settings (user_id, watchlist, ticker, paper_positions, updated_at) VALUES (?, ?, ?, ?, ?)',
+      args: [req.user.id, finalWatchlist, finalTicker, finalPaperPositions, new Date().toISOString()]
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error saving user settings:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── Mode Endpoints ────────────────────────────────────────────────────────
 app.get('/api/mode', authenticateToken, (req, res) => {

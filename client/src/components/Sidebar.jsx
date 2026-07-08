@@ -381,7 +381,39 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
   const [target, setTarget] = useState('')
   const [positions, setPositions] = useState(loadPositions)
 
-  useEffect(() => { savePositions(positions) }, [positions])
+  // Fetch from database on mount
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    if (!token) return
+
+    fetch('/api/user/settings', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.paper_positions && data.paper_positions.length > 0) {
+          setPositions(data.paper_positions)
+        }
+      })
+      .catch(err => console.error('Error fetching paper positions:', err))
+  }, [])
+
+  // Save to localStorage and database on update
+  useEffect(() => {
+    savePositions(positions)
+    
+    const token = localStorage.getItem('token')
+    if (!token) return
+
+    fetch('/api/user/settings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ paper_positions: positions })
+    }).catch(err => console.error('Error saving paper positions:', err))
+  }, [positions])
 
   useEffect(() => {
     if (!prices || Object.keys(prices).length === 0) return

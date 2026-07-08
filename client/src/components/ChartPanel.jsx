@@ -1119,8 +1119,8 @@ export default function ChartPanel({
     if (tick.mode && tick.mode.toLowerCase() !== modeRef.current.toLowerCase()) return
 
     const tfSec = TF_SECONDS[tf] || 300
-    const offset = -new Date().getTimezoneOffset() * 60
-    const nowSec = Math.floor((tick.timestamp || Date.now()) / 1000) + offset
+    // Fix: Remove the timezone offset addition so that tick.timestamp (UTC epoch) aligns perfectly with aggregateCandles UTC boundaries
+    const nowSec = Math.floor((tick.timestamp || Date.now()) / 1000)
 
     let candleTime
     if (tfSec < 86400) {
@@ -1159,12 +1159,43 @@ export default function ChartPanel({
       c.close = tick.ltp
     }
 
-    const candle = buf[bufKey]
+    const rawCandle = buf[bufKey]
     const style = chartStyle
 
     const lastCandleTime = lastCandle ? lastCandle.time : 0
-    if (candle.time < lastCandleTime) {
+    if (rawCandle.time < lastCandleTime) {
       return
+    }
+
+    // Transform raw candle if style is an alternate type like Heikin Ashi
+    let candle = rawCandle
+    if (style === 'heikin_ashi') {
+      const isNewCandle = !lastCandle || rawCandle.time > lastCandle.time
+      let prevHa = null
+      if (loadedDataRef.current && loadedDataRef.current.length > 0) {
+        const histHA = transformHeikinAshi(
+          isNewCandle
+            ? loadedDataRef.current
+            : loadedDataRef.current.slice(0, -1)
+        )
+        prevHa = histHA[histHA.length - 1]
+      }
+      
+      const haClose = (rawCandle.open + rawCandle.high + rawCandle.low + rawCandle.close) / 4
+      const haOpen = prevHa
+        ? (prevHa.open + prevHa.close) / 2
+        : (rawCandle.open + rawCandle.close) / 2
+      const haHigh = Math.max(rawCandle.high, haOpen, haClose)
+      const haLow = Math.min(rawCandle.low, haOpen, haClose)
+      
+      candle = {
+        time: rawCandle.time,
+        open: haOpen,
+        high: haHigh,
+        low: haLow,
+        close: haClose,
+        volume: rawCandle.volume || 0
+      }
     }
 
     if (isCandleSeries(style)) {

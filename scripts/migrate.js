@@ -23,6 +23,7 @@ async function main() {
     await db.execute('DROP TABLE IF EXISTS alerts');
     await db.execute('DROP TABLE IF EXISTS paper_trades');
     await db.execute('DROP TABLE IF EXISTS auto_trades');
+    await db.execute('DROP TABLE IF EXISTS user_settings');
     
     await db.execute(`
       CREATE TABLE IF NOT EXISTS users (
@@ -108,6 +109,17 @@ async function main() {
         price REAL NOT NULL,
         trade_id TEXT,
         created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      );
+    `);
+
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS user_settings (
+        user_id TEXT PRIMARY KEY,
+        watchlist TEXT,
+        ticker TEXT,
+        paper_positions TEXT,
+        updated_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
       );
     `);
