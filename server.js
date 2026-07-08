@@ -1031,10 +1031,10 @@ async function processAutoTrades() {
     if (activeResult.rows.length === 0) return;
 
     for (const session of activeResult.rows) {
-      // 1. Time Window check
-      const now = new Date();
-      const hours = String(now.getHours()).padStart(2, '0');
-      const minutes = String(now.getMinutes()).padStart(2, '0');
+      // 1. Time Window check (always evaluate in Indian Standard Time timezone)
+      const nowInIst = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+      const hours = String(nowInIst.getHours()).padStart(2, '0');
+      const minutes = String(nowInIst.getMinutes()).padStart(2, '0');
       const currentTimeStr = `${hours}:${minutes}`;
 
       if (currentTimeStr < session.start_time || currentTimeStr > session.end_time) {
@@ -1896,6 +1896,14 @@ if (!keyToSymbol['MCX_FO|CRUDEOIL']) keyToSymbol['MCX_FO|CRUDEOIL'] = 'CRUDEOIL'
 // Ensure SBIN is in symbolToKey so search/subscription works
 if (!symbolToKey['SBIN']) symbolToKey['SBIN'] = 'NSE_EQ|INE062A01020';
 if (!keyToSymbol['NSE_EQ|INE062A01020']) keyToSymbol['NSE_EQ|INE062A01020'] = 'SBIN';
+
+// Ensure NIFTY indices are in symbolToKey so search/subscription/auto-trades work
+if (!symbolToKey['NIFTY']) symbolToKey['NIFTY'] = 'NSE_INDEX|Nifty 50';
+if (!symbolToKey['NIFTY50']) symbolToKey['NIFTY50'] = 'NSE_INDEX|Nifty 50';
+if (!keyToSymbol['NSE_INDEX|Nifty 50']) keyToSymbol['NSE_INDEX|Nifty 50'] = 'NIFTY';
+
+if (!symbolToKey['BANKNIFTY']) symbolToKey['BANKNIFTY'] = 'NSE_INDEX|Nifty Bank';
+if (!keyToSymbol['NSE_INDEX|Nifty Bank']) keyToSymbol['NSE_INDEX|Nifty Bank'] = 'BANKNIFTY';
 
 const demoPrices = {};
 const demoTickGenerators = {};
