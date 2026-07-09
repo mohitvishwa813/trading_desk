@@ -692,9 +692,13 @@ export default function App() {
           const data = msg.data
           setPrices(prev => ({ ...prev, [data.symbol]: data.ltp }))
           setTick(data)
-          // Build tick cache keyed by instrumentKey (unique, survives symbol name mismatches)
-          const cacheKey = data.instrumentKey || data.symbol
-          setTickCache(prev => ({ ...prev, [cacheKey]: data }))
+          // Build tick cache keyed by BOTH instrumentKey AND symbol (for absolute mapping resilience)
+          setTickCache(prev => {
+            const next = { ...prev }
+            if (data.instrumentKey) next[data.instrumentKey] = data
+            if (data.symbol) next[data.symbol.toUpperCase()] = data
+            return next
+          })
           // Track opening price (first tick per symbol)
           setOpenPrices(prev => {
             const baseOpen = data.close || data.open || data.ltp
@@ -878,7 +882,10 @@ export default function App() {
   // ── Helper: get tick by instrumentKey (preferred) or symbol from cache ──
   const getTickForSymbol = (symbol, instrumentKey) => {
     if (instrumentKey && tickCache[instrumentKey]) return tickCache[instrumentKey]
-    if (symbol && tickCache[symbol]) return tickCache[symbol]
+    if (symbol) {
+      if (tickCache[symbol]) return tickCache[symbol]
+      if (tickCache[symbol.toUpperCase()]) return tickCache[symbol.toUpperCase()]
+    }
     return null
   }
 

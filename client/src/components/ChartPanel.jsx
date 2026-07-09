@@ -473,12 +473,13 @@ export default function ChartPanel({
   const [isLive, setIsLive] = useState(false)
   const lastTickTimeRef = useRef(0)
   const [priceLabelY, setPriceLabelY] = useState(null)
+  const serverTimeOffsetRef = useRef(0)
 
   // Candle countdown timer — based on current candle's open time + duration
   useEffect(() => {
     const update = () => {
       const dur = TF_SECONDS[tfRef.current] || 60
-      const nowSec = Math.floor(Date.now() / 1000)
+      const nowSec = Math.floor(Date.now() / 1000) + serverTimeOffsetRef.current
       // Epoch-aligned candle start (works for all standard TF durations)
       const candleStart = Math.floor(nowSec / dur) * dur
       const candleEnd = candleStart + dur
@@ -1108,10 +1109,18 @@ export default function ChartPanel({
     if (!tick) return
     if (!loadedDataRef.current || loadedDataRef.current.length === 0) return
 
-    // Match tick to this chart by instrumentKey first, fall back to symbol
-    const tickKey = tick.instrumentKey || tick.symbol
-    const chartKey = instrumentKey || activeSymbol
-    if (tickKey !== chartKey) return
+    // Match tick to this chart with robust case-insensitive cross-matching (instrumentKey or symbol)
+    const tickKey = (tick.instrumentKey || '').toUpperCase().replace(/[\s_-]/g, '')
+    const tickSym = (tick.symbol || '').toUpperCase().replace(/[\s_-]/g, '')
+    const chartKey = (instrumentKey || '').toUpperCase().replace(/[\s_-]/g, '')
+    const chartSym = (activeSymbol || '').toUpperCase().replace(/[\s_-]/g, '')
+
+    const isMatch = (tickKey && chartKey && tickKey === chartKey) ||
+                    (tickSym && chartSym && tickSym === chartSym) ||
+                    (tickKey && tickKey === chartSym) ||
+                    (chartKey && chartKey === tickSym)
+
+    if (!isMatch) return
 
     if (replayMode) return // pause during replay
 
@@ -1119,8 +1128,9 @@ export default function ChartPanel({
     if (tick.mode && tick.mode.toLowerCase() !== modeRef.current.toLowerCase()) return
 
     const tfSec = TF_SECONDS[tf] || 300
-    // Fix: Remove the timezone offset addition so that tick.timestamp (UTC epoch) aligns perfectly with aggregateCandles UTC boundaries
     const nowSec = Math.floor((tick.timestamp || Date.now()) / 1000)
+    // Calibrate local clock offset relative to exchange server timestamp
+    serverTimeOffsetRef.current = nowSec - Math.floor(Date.now() / 1000)
 
     let candleTime
     if (tfSec < 86400) {
