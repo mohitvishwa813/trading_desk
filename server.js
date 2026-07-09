@@ -446,10 +446,16 @@ async function connectUpstox() {
 
     const wsUrl = authResp.data?.data?.authorized_redirect_uri;
     if (!wsUrl) {
-      console.error('❌ Failed to get WebSocket URL:', authResp.data);
+      console.error('❌ Failed to get WebSocket URL. Response:', JSON.stringify(authResp.data, null, 2));
+      console.error('   This usually means:');
+      console.error('   1. Token is expired — get a new Analytics Token from https://developer.upstox.com');
+      console.error('   2. Token lacks feed permissions — regenerate it and try again');
+      console.error('   3. API key/secret might be invalid — verify app config on Upstox dashboard');
       return setTimeout(connectUpstox, 5000);
     }
     console.log(`🔌 WS URL: ${wsUrl.slice(0, 80)}...`);
+
+    console.log(`🔐 Token exp check: ${ACCESS_TOKEN.substring(0, 50)}...`);
 
     upstoxWS = new WebSocket(wsUrl, {
       followRedirects: true,
@@ -504,9 +510,26 @@ async function connectUpstox() {
 
     upstoxWS.on('error', (err) => {
       console.error('Upstox WS error:', err.message);
+      console.error('   Full error:', err);
+      if (err.code) console.error('   Code:', err.code);
+      if (err.response) console.error('   Response:', err.response);
     });
   } catch (err) {
-    console.error('❌ Upstox authorize failed:', err.message);
+    const status = err.response?.status;
+    console.error(`❌ Upstox authorize failed (${status}):`, err.message);
+
+    if (status === 403 || status === 401) {
+      console.error('\n📋 QUICK FIX:');
+      console.error('1. Go to https://developer.upstox.com');
+      console.error('2. Log in → API Settings → Analytics Token');
+      console.error('3. Click "Regenerate" (valid for 1 year)');
+      console.error('4. Copy the new token');
+      console.error('5. Update UPSTOX_ACCESS_TOKEN in .env (paste new token)');
+      console.error('6. Restart the server: npm start\n');
+    } else if (err.code === 'ECONNREFUSED') {
+      console.error('   🌐 Network error — check your internet connection');
+    }
+
     setTimeout(connectUpstox, 5000);
   }
 }
@@ -517,6 +540,18 @@ function broadcast(msg) {
     if (client.readyState === WebSocket.OPEN) client.send(str);
   });
 }
+
+// ─── Health Check ───────────────────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    mode: currentMode,
+    upstoxConnected: upstoxWS && upstoxWS.readyState === WebSocket.OPEN,
+    binanceConnected: binanceWS && binanceWS.readyState === WebSocket.OPEN,
+    instrumentsLoaded: instrumentsLoaded,
+    instrumentCount: instrumentsByKey.size
+  });
+});
 
 // ─── REST Endpoints ──────────────────────────────────────────────────────────
 
@@ -2022,6 +2057,9 @@ function stopDemoTicks() {
 // ─── User Settings Sync Endpoints ───────────────────────────────────────────
 app.get('/api/user/settings', authenticateToken, async (req, res) => {
   try {
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ error: 'No user ID in token' });
+    }
     const result = await db.execute({
       sql: 'SELECT * FROM user_settings WHERE user_id = ?',
       args: [req.user.id]
