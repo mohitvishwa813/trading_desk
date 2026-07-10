@@ -908,6 +908,7 @@ export default function App() {
           chartLayoutMode={layoutMode}
           chartIndex={i}
           isFocused={focusedChart === i}
+          liveCandles={candlesMap[i] || []}
           onFocus={() => setFocusedChart(i)}
           mode={mode}
           onSymbolChange={(symbol, instrumentKey) => {

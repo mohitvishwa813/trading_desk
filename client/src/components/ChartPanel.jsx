@@ -449,6 +449,7 @@ export default function ChartPanel({
   tf = '5m',
   onTimeframeChange = () => { },
   onCandlesLoaded = () => { },
+  liveCandles = [],
 }) {
   // --- State ----------------------------------
   const setTF = onTimeframeChange
@@ -546,6 +547,7 @@ export default function ChartPanel({
   drawingsRef.current = drawings
   const onDrawingsChangeRef = useRef(onDrawingsChange)
   onDrawingsChangeRef.current = onDrawingsChange
+  const hasInitialFitRef = useRef(false)
 
   // Stable refs so effects/callbacks always read latest value without recreating
   const tfRef = useRef(tf)
@@ -788,6 +790,35 @@ export default function ChartPanel({
       document.removeEventListener('click', handleClickOutside)
     }
   }, [])
+
+  // --- Live candle updates from new ticks ----
+  useEffect(() => {
+    if (!candleSeriesRef.current || !liveCandles || liveCandles.length === 0) return
+
+    // Store live candles in ref for indicators
+    loadedDataRef.current = liveCandles
+
+    // Transform candles based on chart style
+    const style = chartStyle
+    const transformed = transformData(liveCandles, style)
+
+    // Update main series
+    updateActiveSeries(transformed, style)
+
+    // Update the last candle's close to reflect current LTP (for right price scale)
+    if (liveCandles.length > 0 && candleSeriesRef.current) {
+      const lastCandle = liveCandles[liveCandles.length - 1]
+      if (lastCandle) {
+        candleSeriesRef.current.update(lastCandle)
+      }
+    }
+
+    // Auto-fit content on first load
+    if (liveCandles.length > 0 && !hasInitialFitRef.current) {
+      chartRef.current?.timeScale().fitContent()
+      hasInitialFitRef.current = true
+    }
+  }, [liveCandles, chartStyle, updateActiveSeries])
 
   // --- Drawing interaction handlers ---------
   useEffect(() => {
