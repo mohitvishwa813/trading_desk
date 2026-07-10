@@ -218,7 +218,7 @@ function LogTabContent({ alerts, webhookStatus, tradesRefreshKey, prices, active
       {/* Tab Content Area */}
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
         {bottomTab === 'alerts' ? (
-          <AlertLog alerts={alerts} />
+          <AlertLog alerts={alerts} prices={prices} />
         ) : (
           <TradeJournal trades={trades} loading={tradesLoading} prices={prices} activeSymbol={activeSymbol} price={price} />
         )}
@@ -748,7 +748,50 @@ function calculateGroupPnL(alerts) {
   return totalRealizedPnL;
 }
 
-function AlertLog({ alerts }) {
+function calculateGroupOpenPosition(alerts) {
+  // Sort oldest first
+  const sorted = [...alerts].sort((a, b) => new Date(a.timestamp || a.time) - new Date(b.timestamp || b.time));
+  
+  let position = 0;
+  let avgPrice = 0;
+  
+  for (const al of sorted) {
+    const trade = parseAlertTradeDetails(al.message);
+    if (!trade) continue;
+    
+    const { side, qty, price } = trade;
+    
+    if (position === 0) {
+      position = side === 'BUY' ? qty : -qty;
+      avgPrice = price;
+    } else if (position > 0) {
+      if (side === 'BUY') {
+        avgPrice = (avgPrice * position + price * qty) / (position + qty);
+        position += qty;
+      } else {
+        position -= qty;
+      }
+    } else {
+      if (side === 'SELL') {
+        avgPrice = (avgPrice * Math.abs(position) + price * qty) / (Math.abs(position) + qty);
+        position -= qty;
+      } else {
+        position += qty;
+      }
+    }
+  }
+  
+  if (position !== 0) {
+    return {
+      side: position > 0 ? 'BUY' : 'SELL',
+      qty: Math.abs(position),
+      avgPrice: avgPrice
+    };
+  }
+  return null;
+}
+
+function AlertLog({ alerts, prices = {} }) {
   const [expandedGroups, setExpandedGroups] = useState({});
 
   const toggleGroup = (key) => {
@@ -807,26 +850,55 @@ function AlertLog({ alerts }) {
     return sum + (isToday ? calculateGroupPnL(g.alerts) : 0);
   }, 0);
 
+  const totalUnrealizedPnL = groupList.reduce((sum, g) => {
+    const isToday = new Date(g.latestTime).toDateString() === todayStr;
+    if (!isToday) return sum;
+    const openPos = calculateGroupOpenPosition(g.alerts);
+    if (!openPos) return sum;
+    const livePrice = prices[g.symbol] || openPos.avgPrice;
+    const unrealized = openPos.side === 'BUY' 
+      ? (livePrice - openPos.avgPrice) * openPos.qty 
+      : (openPos.avgPrice - livePrice) * openPos.qty;
+    return sum + unrealized;
+  }, 0);
+
+  const totalPnL = todayPnL + totalUnrealizedPnL;
+
   return (
     <div className="p-2 space-y-2 select-none">
       {/* Today's PnL Dashboard Widget */}
-      <div className="bg-[#0b0d15] border border-[#1b1f2e] rounded-lg p-3 flex items-center justify-between shadow-sm">
-        <div className="space-y-0.5">
-          <span className="text-[10px] text-[#808290] font-bold uppercase tracking-wider block">Today's Realized P&L</span>
-          <span className="text-[9px] text-[#4f5260] block">Real-time matching from alert logs</span>
+      <div className="bg-[#0b0d15] border border-[#1b1f2e] rounded-lg p-3 flex flex-col gap-2 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <span className="text-[10px] text-[#808290] font-bold uppercase tracking-wider block">Today's Total P&L</span>
+            <span className="text-[9px] text-[#4f5260] block">Realized + Live Unrealized P&L</span>
+          </div>
+          <div className={`text-sm font-extrabold font-mono px-2.5 py-1 rounded border ${
+            totalPnL > 0 
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+              : totalPnL < 0 
+                ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+                : 'bg-[#181b28] text-slate-400 border-[#242838]'
+          }`}>
+            {totalPnL > 0 ? '+' : ''}₹{totalPnL.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
         </div>
-        <div className={`text-sm font-extrabold font-mono px-2.5 py-1 rounded border ${
-          todayPnL > 0 
-            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-            : todayPnL < 0 
-              ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
-              : 'bg-[#181b28] text-slate-400 border-[#242838]'
-        }`}>
-          {todayPnL > 0 ? '+' : ''}₹{todayPnL.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        <div className="flex items-center justify-between text-[10px] border-t border-[#181a26]/30 pt-2 text-[#808290] font-mono">
+          <div>Realized: <span className={todayPnL > 0 ? 'text-emerald-400' : todayPnL < 0 ? 'text-rose-400' : 'text-slate-400'}>₹{todayPnL.toFixed(2)}</span></div>
+          <div>Unrealized: <span className={totalUnrealizedPnL > 0 ? 'text-emerald-400' : totalUnrealizedPnL < 0 ? 'text-rose-400' : 'text-slate-400'}>₹{totalUnrealizedPnL.toFixed(2)}</span></div>
         </div>
       </div>
       {groupList.map(group => {
         const groupPnL = calculateGroupPnL(group.alerts);
+        const openPos = calculateGroupOpenPosition(group.alerts);
+        let unrealizedPnL = 0;
+        if (openPos) {
+          const livePrice = prices[group.symbol] || openPos.avgPrice;
+          unrealizedPnL = openPos.side === 'BUY' 
+            ? (livePrice - openPos.avgPrice) * openPos.qty 
+            : (openPos.avgPrice - livePrice) * openPos.qty;
+        }
+
         const isExpanded = !!expandedGroups[group.key];
         const hasTradeId = !!group.tradeId;
         const totalAlerts = group.alerts.length;
@@ -848,13 +920,22 @@ function AlertLog({ alerts }) {
                 <span className="text-xs font-bold text-[#e2e8f0]">
                   {group.symbol}
                 </span>
+                {openPos && (
+                  <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded animate-pulse border ${
+                    unrealizedPnL >= 0 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
+                  }`}>
+                    LIVE: {unrealizedPnL >= 0 ? '+' : ''}₹{unrealizedPnL.toFixed(2)}
+                  </span>
+                )}
                 {groupPnL !== 0 && (
-                  <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded ${
+                  <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded border ${
                     groupPnL > 0 
                       ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                      : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
                   }`}>
-                    {groupPnL > 0 ? '+' : ''}₹{groupPnL.toFixed(2)}
+                    REALIZED: {groupPnL > 0 ? '+' : ''}₹{groupPnL.toFixed(2)}
                   </span>
                 )}
                 <span className="text-[10px] text-muted font-mono">

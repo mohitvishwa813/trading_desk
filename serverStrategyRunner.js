@@ -517,7 +517,7 @@ function run(candles, code) {
         positionState.size += qty
       }
 
-      rawSignals.push({ barIndex: i, type: 'BUY', label, time: candles[i].time, price })
+      rawSignals.push({ barIndex: i, type: 'BUY', label, time: candles[i].time, price, options: { qty } })
     },
     sell: (i, label = 'Sell', options = {}) => {
       if (i < 0 || i >= candles.length) return
@@ -550,7 +550,7 @@ function run(candles, code) {
         positionState.size -= qty
       }
 
-      rawSignals.push({ barIndex: i, type: 'SELL', label, time: candles[i].time, price })
+      rawSignals.push({ barIndex: i, type: 'SELL', label, time: candles[i].time, price, options: { qty } })
     },
     close: (i, label = 'Close', options = {}) => {
       if (i < 0 || i >= candles.length || positionState.size === 0) return

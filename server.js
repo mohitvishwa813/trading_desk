@@ -1175,8 +1175,46 @@ async function processAutoTrades() {
 
           const isCloseSignal = side === 'CLOSE' || side === 'EXIT';
 
+          // Proportional quantity scaling logic for partial/full close signals
+          let closedQty = session.qty;
+          let isFullClose = true;
+
+          if (isCloseSignal) {
+            // Find active open trade in database to read current remaining quantity and comment
+            const activeOpenRes = await db.execute({
+              sql: 'SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND status = ? ORDER BY created_at ASC LIMIT 1',
+              args: [session.user_id, session.symbol, 'OPEN']
+            });
+            if (activeOpenRes.rows.length > 0) {
+              const activeTrade = activeOpenRes.rows[0];
+              let strategyActiveSize = tracker.strategyActiveSize || 10;
+              try {
+                const parsed = JSON.parse(activeTrade.comment);
+                if (parsed && parsed.strategyActiveSize !== undefined) {
+                  strategyActiveSize = parsed.strategyActiveSize;
+                }
+              } catch (e) { /* ok */ }
+
+              const sigQty = sig.options?.qty || strategyActiveSize;
+              if (sigQty < strategyActiveSize) {
+                // Proportional partial close based on strategy quantities
+                closedQty = Math.round(activeTrade.qty * (sigQty / strategyActiveSize));
+                closedQty = Math.max(1, Math.min(closedQty, activeTrade.qty));
+                tracker.strategyActiveSize = strategyActiveSize - sigQty;
+                isFullClose = (closedQty >= activeTrade.qty);
+              } else {
+                closedQty = activeTrade.qty;
+                tracker.strategyActiveSize = 0;
+                isFullClose = true;
+              }
+            }
+          } else {
+            // Entry signal (BUY/SELL) - initialize strategy size
+            const initialStrategyQty = sig.options?.qty || 10;
+            tracker.strategyActiveSize = initialStrategyQty;
+          }
+
           if (session.mode === 'PAPER') {
-            // Find active open position to close
             const openResult = await db.execute({
               sql: isCloseSignal 
                 ? 'SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND status = ? ORDER BY created_at ASC LIMIT 1'
@@ -1190,37 +1228,27 @@ async function processAutoTrades() {
               const activeTrade = openResult.rows[0];
               assignedTradeId = activeTrade.id;
               const oldPrice = activeTrade.price;
-              const closedQty = Math.min(session.qty, activeTrade.qty);
               let tradePnl = activeTrade.direction === 'BUY' ? (executionPrice - oldPrice) * closedQty : (oldPrice - executionPrice) * closedQty;
 
-              if (session.qty >= activeTrade.qty) {
+              if (isFullClose) {
                 await db.execute({
                   sql: 'UPDATE paper_trades SET status = ?, pnl = ?, closed_at = ?, comment = ? WHERE id = ?',
                   args: ['CLOSED', tradePnl, new Date().toISOString(), `Auto Trade closed via: ${strat.name}`, activeTrade.id]
                 });
-
-                if (session.qty > activeTrade.qty) {
-                  const remainder = session.qty - activeTrade.qty;
-                  const remainderId = `pt_${Date.now()}`;
-                  sessionActiveTrades[session.id] = remainderId; // new trade group for remainder
-                  await db.execute({
-                    sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    args: [remainderId, session.user_id, session.symbol, side, remainder, executionPrice, 'OPEN', new Date().toISOString(), 'Remainder position']
-                  });
-                } else {
-                  delete sessionActiveTrades[session.id]; // position fully closed
-                }
+                delete sessionActiveTrades[session.id]; // position fully closed
               } else {
-                const remainingQty = activeTrade.qty - session.qty;
+                const remainingQty = activeTrade.qty - closedQty;
+                const newComment = JSON.stringify({ strategyName: strat.name, strategyActiveSize: tracker.strategyActiveSize });
+                
                 await db.execute({
-                  sql: 'UPDATE paper_trades SET qty = ? WHERE id = ?',
-                  args: [remainingQty, activeTrade.id]
+                  sql: 'UPDATE paper_trades SET qty = ?, comment = ? WHERE id = ?',
+                  args: [remainingQty, newComment, activeTrade.id]
                 });
 
                 const closedId = `pt_partial_${Date.now()}`;
                 await db.execute({
                   sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, pnl, created_at, closed_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                  args: [closedId, session.user_id, session.symbol, activeTrade.direction, session.qty, activeTrade.price, 'CLOSED', tradePnl, activeTrade.created_at, new Date().toISOString(), 'Partially closed']
+                  args: [closedId, session.user_id, session.symbol, activeTrade.direction, closedQty, activeTrade.price, 'CLOSED', tradePnl, activeTrade.created_at, new Date().toISOString(), 'Partially closed']
                 });
               }
 
@@ -1233,14 +1261,14 @@ async function processAutoTrades() {
                 args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
               });
             } else if (!isCloseSignal) {
-              // Open new position (only if it is a BUY/SELL signal)
               const newPositionId = `pt_${Date.now()}`;
               assignedTradeId = newPositionId;
               sessionActiveTrades[session.id] = newPositionId;
+              const openComment = JSON.stringify({ strategyName: strat.name, strategyActiveSize: tracker.strategyActiveSize });
 
               await db.execute({
                 sql: 'INSERT INTO paper_trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                args: [newPositionId, session.user_id, session.symbol, side, session.qty, executionPrice, 'OPEN', new Date().toISOString(), `Auto Trade opened via: ${strat.name}`]
+                args: [newPositionId, session.user_id, session.symbol, side, session.qty, executionPrice, 'OPEN', new Date().toISOString(), openComment]
               });
 
               // Log corresponding entry alert
@@ -1254,7 +1282,7 @@ async function processAutoTrades() {
           } else {
             // Live webhook
             const targetWebhook = process.env.DISCORD_TELEGRAM_WEBHOOK_URL || MAKE_WEBHOOK_URL;
-            const alertMsg = `[Live ${side}] ${session.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
+            const alertMsg = `[Live ${side}] ${closedQty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
 
             if (targetWebhook && targetWebhook.startsWith('http')) {
               await axios.post(targetWebhook, { content: `[LIVE AUTO] ${strat.name}: ${alertMsg}` })
@@ -1267,7 +1295,7 @@ async function processAutoTrades() {
               args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
             });
 
-            if (isCloseSignal) {
+            if (isCloseSignal && isFullClose) {
               delete sessionActiveTrades[session.id];
             }
           }
