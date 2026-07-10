@@ -455,10 +455,22 @@ export default function ChartPanel({
   const setTF = onTimeframeChange
   const [loading, setLoading] = useState(false)
   const [visibleRange, setVisibleRange] = useState(null)
-  const [showPlots, setShowPlots] = useState(true)
-  const [showSignals, setShowSignals] = useState(true)
-  const [showLabels, setShowLabels] = useState(true)
-  const [showStats, setShowStats] = useState(true)
+  const [showPlots, setShowPlots] = useState(() => {
+    const saved = localStorage.getItem('chart_showPlots')
+    return saved !== null ? saved === 'true' : true
+  })
+  const [showSignals, setShowSignals] = useState(() => {
+    const saved = localStorage.getItem('chart_showSignals')
+    return saved !== null ? saved === 'true' : true
+  })
+  const [showLabels, setShowLabels] = useState(() => {
+    const saved = localStorage.getItem('chart_showLabels')
+    return saved !== null ? saved === 'true' : true
+  })
+  const [showStats, setShowStats] = useState(() => {
+    const saved = localStorage.getItem('chart_showStats')
+    return saved !== null ? saved === 'true' : true
+  })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [ctxMenu, setCtxMenu] = useState({ show: false, x: 0, y: 0 })
   const [bottomPanelHeight, setBottomPanelHeight] = useState(() => {
@@ -570,6 +582,10 @@ export default function ChartPanel({
 
   // --- Persist style --------------------------
   useEffect(() => { localStorage.setItem('chartStyle', chartStyle) }, [chartStyle])
+  useEffect(() => { localStorage.setItem('chart_showPlots', showPlots) }, [showPlots])
+  useEffect(() => { localStorage.setItem('chart_showSignals', showSignals) }, [showSignals])
+  useEffect(() => { localStorage.setItem('chart_showLabels', showLabels) }, [showLabels])
+  useEffect(() => { localStorage.setItem('chart_showStats', showStats) }, [showStats])
 
   // --- Helper: apply data to series -----------
   const applyToSeries = useCallback((series, data, style) => {
@@ -1522,8 +1538,8 @@ export default function ChartPanel({
         activeSeries.setMarkers([])
       }
 
-      // 4. Render horizontal price lines on the axis
-      if (showPlots && strategyLines && strategyLines.length > 0) {
+      // 4. Render horizontal price lines on the axis (controlled by SL/TP Labels)
+      if (showLabels && strategyLines && strategyLines.length > 0) {
         strategyLines.forEach(l => {
           if (l.price !== undefined) {
             const pl = activeSeries.createPriceLine({
@@ -1539,7 +1555,7 @@ export default function ChartPanel({
         })
       }
     }
-  }, [strategySignals, strategyPlots, strategyLines, dataVersion, chartStyle, getActiveSeries, showPlots, showSignals])
+  }, [strategySignals, strategyPlots, strategyLines, dataVersion, chartStyle, getActiveSeries, showPlots, showSignals, showLabels])
 
   // --- Keyboard handlers for drawings --------
   useEffect(() => {

@@ -150,7 +150,14 @@ export default function App() {
 
   // ── Lifted states for live strategy updates & auto-refresh ──
   const [candlesMap, setCandlesMap] = useState({}) // chartIndex -> candles array
-  const [chartTimeframes, setChartTimeframes] = useState({ 0: '5m', 1: '5m', 2: '5m', 3: '5m' })
+  const [chartTimeframes, setChartTimeframes] = useState(() => {
+    try {
+      const saved = localStorage.getItem('chartTimeframes')
+      return saved ? JSON.parse(saved) : { 0: '5m', 1: '5m', 2: '5m', 3: '5m' }
+    } catch {
+      return { 0: '5m', 1: '5m', 2: '5m', 3: '5m' }
+    }
+  })
 
   // Refs to avoid stale closures in the WebSocket handler
   const chartConfigsRef = useRef([])
@@ -493,6 +500,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('layoutMode_v1', layoutMode)
   }, [layoutMode])
+
+  useEffect(() => {
+    localStorage.setItem('chartTimeframes', JSON.stringify(chartTimeframes))
+  }, [chartTimeframes])
 
   // Subscribe whenever a chart, watchlist, or ticker changes, or WebSocket connects
   useEffect(() => {
