@@ -557,6 +557,17 @@ export default function ChartPanel({
   const modeRef = useRef(mode)
   modeRef.current = mode
 
+  const getActiveSeries = useCallback(() => {
+    const style = chartStyleRef.current
+    if (isCandleSeries(style)) return candleSeriesRef.current
+    if (isBarSeries(style)) return barSeriesRef.current
+    if (isLineSeries(style)) return lineSeriesRef.current
+    if (isAreaSeries(style)) return areaSeriesRef.current
+    if (isBaselineSeries(style)) return baselineSeriesRef.current
+    if (isColumnSeries(style)) return histogramSeriesRef.current
+    return null
+  }, [])
+
   // --- Persist style --------------------------
   useEffect(() => { localStorage.setItem('chartStyle', chartStyle) }, [chartStyle])
 
@@ -795,22 +806,28 @@ export default function ChartPanel({
   useEffect(() => {
     if (!candleSeriesRef.current || !liveCandles || liveCandles.length === 0) return
 
+    const style = chartStyle
+    const transformed = transformData(liveCandles, style)
+    const activeSeries = getActiveSeries()
+    if (!activeSeries) return
+
+    // High performance check: is this a live tick updating the last candle, or a full symbol load?
+    const isTickUpdate = loadedDataRef.current &&
+                         loadedDataRef.current.length === liveCandles.length &&
+                         loadedDataRef.current[loadedDataRef.current.length - 1]?.time === liveCandles[liveCandles.length - 1]?.time
+
     // Store live candles in ref for indicators
     loadedDataRef.current = liveCandles
 
-    // Transform candles based on chart style
-    const style = chartStyle
-    const transformed = transformData(liveCandles, style)
-
-    // Update main series
-    updateActiveSeries(transformed, style)
-
-    // Update the last candle's close to reflect current LTP (for right price scale)
-    if (liveCandles.length > 0 && candleSeriesRef.current) {
-      const lastCandle = liveCandles[liveCandles.length - 1]
+    if (isTickUpdate) {
+      // Direct tick update (super fast, prevents whole chart redraw and strategy marker flickering)
+      const lastCandle = transformed[transformed.length - 1]
       if (lastCandle) {
-        candleSeriesRef.current.update(lastCandle)
+        activeSeries.update(lastCandle)
       }
+    } else {
+      // Full candles load or new candle open (calls setData)
+      updateActiveSeries(transformed, style)
     }
 
     // Auto-fit content on first load
@@ -818,7 +835,7 @@ export default function ChartPanel({
       chartRef.current?.timeScale().fitContent()
       hasInitialFitRef.current = true
     }
-  }, [liveCandles, chartStyle, updateActiveSeries])
+  }, [liveCandles, chartStyle, updateActiveSeries, getActiveSeries])
 
   // --- Drawing interaction handlers ---------
   useEffect(() => {
@@ -1393,17 +1410,6 @@ export default function ChartPanel({
   // --- Strategy Plots & Signals Rendering --------------------
   const strategySeriesRefs = useRef([])
   const priceLinesRef = useRef([])
-
-  const getActiveSeries = useCallback(() => {
-    const style = chartStyleRef.current
-    if (isCandleSeries(style)) return candleSeriesRef.current
-    if (isBarSeries(style)) return barSeriesRef.current
-    if (isLineSeries(style)) return lineSeriesRef.current
-    if (isAreaSeries(style)) return areaSeriesRef.current
-    if (isBaselineSeries(style)) return baselineSeriesRef.current
-    if (isColumnSeries(style)) return histogramSeriesRef.current
-    return null
-  }, [])
 
   useEffect(() => {
     const chart = chartRef.current
