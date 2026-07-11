@@ -175,10 +175,17 @@ export default function AutoTradeModal({
                 className="w-full bg-[#0d0f19] border border-[#222533] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-[#7c6af7] transition-all disabled:opacity-60"
               >
                 <option value="1m">1 minute</option>
+                <option value="3m">3 minutes</option>
                 <option value="5m">5 minutes</option>
+                <option value="10m">10 minutes</option>
                 <option value="15m">15 minutes</option>
+                <option value="30m">30 minutes</option>
                 <option value="1h">1 hour</option>
+                <option value="2h">2 hours</option>
+                <option value="4h">4 hours</option>
                 <option value="1d">1 day</option>
+                <option value="1w">1 week</option>
+                <option value="1month">1 month</option>
               </select>
             </div>
           </div>

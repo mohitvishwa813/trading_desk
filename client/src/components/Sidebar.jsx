@@ -801,9 +801,17 @@ function AlertLog({ alerts, prices = {} }) {
     }));
   };
 
-  // Grouping logic
+  // 1. Filter alerts: Only show alerts from the current day
+  const todayStr = new Date().toDateString();
+  const todayAlerts = alerts.filter(a => {
+    const dateVal = a.timestamp || a.time;
+    if (!dateVal) return true; // keep initialization/system alerts that don't have timestamps
+    return new Date(dateVal).toDateString() === todayStr;
+  });
+
+  // Grouping logic for today's alerts
   const grouped = {};
-  alerts.forEach(a => {
+  todayAlerts.forEach(a => {
     const dateStr = a.timestamp ? new Date(a.timestamp).toLocaleDateString() : 'System';
     const key = a.tradeId || `nogroup-${dateStr}-${a.symbol || 'SYSTEM'}`;
     
@@ -835,24 +843,20 @@ function AlertLog({ alerts, prices = {} }) {
     INFO: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
   };
 
-  if (alerts.length === 0) {
+  if (todayAlerts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 p-6 text-muted text-xs">
-        <span>No alerts triggered.</span>
+        <span>No alerts triggered today.</span>
       </div>
     );
   }
 
   // Calculate Today's Total realized PnL
-  const todayStr = new Date().toDateString();
   const todayPnL = groupList.reduce((sum, g) => {
-    const isToday = new Date(g.latestTime).toDateString() === todayStr;
-    return sum + (isToday ? calculateGroupPnL(g.alerts) : 0);
+    return sum + calculateGroupPnL(g.alerts);
   }, 0);
 
   const totalUnrealizedPnL = groupList.reduce((sum, g) => {
-    const isToday = new Date(g.latestTime).toDateString() === todayStr;
-    if (!isToday) return sum;
     const openPos = calculateGroupOpenPosition(g.alerts);
     if (!openPos) return sum;
     const livePrice = prices[g.symbol] || openPos.avgPrice;
@@ -864,8 +868,123 @@ function AlertLog({ alerts, prices = {} }) {
 
   const totalPnL = todayPnL + totalUnrealizedPnL;
 
+  // Split groups into Live/Open Positions and Closed Positions
+  const liveGroups = [];
+  const closedGroups = [];
+
+  groupList.forEach(group => {
+    const openPos = calculateGroupOpenPosition(group.alerts);
+    if (openPos) {
+      liveGroups.push(group);
+    } else {
+      closedGroups.push(group);
+    }
+  });
+
+  // Helper to render a group accordion
+  const renderGroup = (group) => {
+    const groupPnL = calculateGroupPnL(group.alerts);
+    const openPos = calculateGroupOpenPosition(group.alerts);
+    let unrealizedPnL = 0;
+    if (openPos) {
+      const livePrice = prices[group.symbol] || openPos.avgPrice;
+      unrealizedPnL = openPos.side === 'BUY' 
+        ? (livePrice - openPos.avgPrice) * openPos.qty 
+        : (openPos.avgPrice - livePrice) * openPos.qty;
+    }
+
+    const isExpanded = !!expandedGroups[group.key];
+    const hasTradeId = !!group.tradeId;
+    const totalAlerts = group.alerts.length;
+
+    return (
+      <div 
+        key={group.key}
+        className="border border-[#1f2332] rounded-lg overflow-hidden bg-[#0d0f17] transition-all duration-200"
+      >
+        {/* Accordion Header */}
+        <div 
+          onClick={() => toggleGroup(group.key)}
+          className="flex items-center justify-between px-3 py-2.5 cursor-pointer bg-[#10121e] hover:bg-[#151928] transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border ${pillMap[group.primarySignal] || pillMap.INFO}`}>
+              {group.primarySignal}
+            </span>
+            <span className="text-xs font-bold text-[#e2e8f0]">
+              {group.symbol}
+            </span>
+            {openPos && (
+              <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded animate-pulse border ${
+                unrealizedPnL >= 0 
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                  : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
+              }`}>
+                LIVE: {unrealizedPnL >= 0 ? '+' : ''}₹{unrealizedPnL.toFixed(2)}
+              </span>
+            )}
+            {groupPnL !== 0 && (
+              <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded border ${
+                groupPnL > 0 
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                  : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
+              }`}>
+                REALIZED: {groupPnL > 0 ? '+' : ''}₹{groupPnL.toFixed(2)}
+              </span>
+            )}
+            <span className="text-[10px] text-muted font-mono">
+              {hasTradeId ? `(${totalAlerts} updates)` : `(${totalAlerts} logs)`}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] text-[#5b5e70] font-mono">
+              {group.latestTime ? new Date(group.latestTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+            </span>
+            <svg 
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+              className={`text-muted transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+        </div>
+
+        {/* Accordion Body */}
+        {isExpanded && (
+          <div className="px-3 py-2 border-t border-[#181a26]/50 bg-[#08090f]/50 space-y-2 relative">
+            {/* Timeline vertical bar */}
+            <div className="absolute left-[20px] top-3 bottom-3 w-[1.5px] bg-[#1d2133]" />
+            
+            {group.alerts.map((al, idx) => {
+              const isTradeAlert = al.signal === 'BUY' || al.signal === 'SELL';
+              
+              return (
+                <div key={idx} className="flex gap-3 text-[11px] leading-relaxed relative pl-1">
+                  {/* Timeline dot */}
+                  <div className="w-[10px] h-[10px] rounded-full bg-[#181a26] border-2 border-[#30364d] mt-1 shrink-0 z-10 flex items-center justify-center">
+                    {isTradeAlert && <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7]" />}
+                  </div>
+                  
+                  {/* Alert message body */}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-slate-300 font-mono text-[10.5px]">
+                      {al.message}
+                    </div>
+                    <div className="text-[9px] text-muted/60 mt-0.5 font-mono">
+                      {al.timestamp ? new Date(al.timestamp).toLocaleTimeString() : al.time || ''}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
-    <div className="p-2 space-y-2 select-none">
+    <div className="p-2 space-y-4 select-none">
       {/* Today's PnL Dashboard Widget */}
       <div className="bg-[#0b0d15] border border-[#1b1f2e] rounded-lg p-3 flex flex-col gap-2 shadow-sm">
         <div className="flex items-center justify-between">
@@ -888,106 +1007,29 @@ function AlertLog({ alerts, prices = {} }) {
           <div>Unrealized: <span className={totalUnrealizedPnL > 0 ? 'text-emerald-400' : totalUnrealizedPnL < 0 ? 'text-rose-400' : 'text-slate-400'}>₹{totalUnrealizedPnL.toFixed(2)}</span></div>
         </div>
       </div>
-      {groupList.map(group => {
-        const groupPnL = calculateGroupPnL(group.alerts);
-        const openPos = calculateGroupOpenPosition(group.alerts);
-        let unrealizedPnL = 0;
-        if (openPos) {
-          const livePrice = prices[group.symbol] || openPos.avgPrice;
-          unrealizedPnL = openPos.side === 'BUY' 
-            ? (livePrice - openPos.avgPrice) * openPos.qty 
-            : (openPos.avgPrice - livePrice) * openPos.qty;
-        }
 
-        const isExpanded = !!expandedGroups[group.key];
-        const hasTradeId = !!group.tradeId;
-        const totalAlerts = group.alerts.length;
-        
-        return (
-          <div 
-            key={group.key}
-            className="border border-[#1f2332] rounded-lg overflow-hidden bg-[#0d0f17] transition-all duration-200"
-          >
-            {/* Accordion Header */}
-            <div 
-              onClick={() => toggleGroup(group.key)}
-              className="flex items-center justify-between px-3 py-2.5 cursor-pointer bg-[#10121e] hover:bg-[#151928] transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border ${pillMap[group.primarySignal] || pillMap.INFO}`}>
-                  {group.primarySignal}
-                </span>
-                <span className="text-xs font-bold text-[#e2e8f0]">
-                  {group.symbol}
-                </span>
-                {openPos && (
-                  <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded animate-pulse border ${
-                    unrealizedPnL >= 0 
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                      : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
-                  }`}>
-                    LIVE: {unrealizedPnL >= 0 ? '+' : ''}₹{unrealizedPnL.toFixed(2)}
-                  </span>
-                )}
-                {groupPnL !== 0 && (
-                  <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded border ${
-                    groupPnL > 0 
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                      : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
-                  }`}>
-                    REALIZED: {groupPnL > 0 ? '+' : ''}₹{groupPnL.toFixed(2)}
-                  </span>
-                )}
-                <span className="text-[10px] text-muted font-mono">
-                  {hasTradeId ? `(${totalAlerts} updates)` : `(${totalAlerts} logs)`}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] text-[#5b5e70] font-mono">
-                  {group.latestTime ? new Date(group.latestTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                </span>
-                <svg 
-                  width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                  className={`text-muted transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </div>
-            </div>
-
-            {/* Accordion Body */}
-            {isExpanded && (
-              <div className="px-3 py-2 border-t border-[#181a26]/50 bg-[#08090f]/50 space-y-2 relative">
-                {/* Timeline vertical bar */}
-                <div className="absolute left-[20px] top-3 bottom-3 w-[1.5px] bg-[#1d2133]" />
-                
-                {group.alerts.map((al, idx) => {
-                  const isTradeAlert = al.signal === 'BUY' || al.signal === 'SELL';
-                  
-                  return (
-                    <div key={idx} className="flex gap-3 text-[11px] leading-relaxed relative pl-1">
-                      {/* Timeline dot */}
-                      <div className="w-[10px] h-[10px] rounded-full bg-[#181a26] border-2 border-[#30364d] mt-1 shrink-0 z-10 flex items-center justify-center">
-                        {isTradeAlert && <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7]" />}
-                      </div>
-                      
-                      {/* Alert message body */}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-slate-300 font-mono text-[10.5px]">
-                          {al.message}
-                        </div>
-                        <div className="text-[9px] text-muted/60 mt-0.5 font-mono">
-                          {al.timestamp ? new Date(al.timestamp).toLocaleTimeString() : al.time || ''}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+      {/* Live / Open Positions */}
+      {liveGroups.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 px-1 py-1 text-[10px] font-bold text-emerald-400 uppercase tracking-widest flex-row">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            Live Positions ({liveGroups.length})
           </div>
-        );
-      })}
+          {liveGroups.map(group => renderGroup(group))}
+        </div>
+      )}
+
+      {closedGroups.length > 0 && (
+        <div className="space-y-2 border-t border-[#1a1c29] pt-3">
+          <div className="px-1 py-1 text-[10px] font-bold text-[#808290] uppercase tracking-widest">
+            Closed Positions ({closedGroups.length})
+          </div>
+          {closedGroups.map(group => renderGroup(group))}
+        </div>
+      )}
     </div>
   );
 }

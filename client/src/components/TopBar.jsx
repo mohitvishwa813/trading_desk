@@ -27,6 +27,7 @@ export default function TopBar({
   // Auto Trade
   autoTradeActive = false,
   onOpenAutoTradeSettings = () => {},
+  onOpenHistory = () => {},
   onLogout,
   onOpenStrategyGuide = () => {},
 }) {
@@ -149,6 +150,19 @@ export default function TopBar({
           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
         </svg>
         Auto Trade
+      </button>
+
+      {/* Trade History Button */}
+      <button
+        onClick={onOpenHistory}
+        className="px-2 py-1 rounded text-[10px] font-bold border border-border bg-transparent text-[#a9adc1] hover:border-accent hover:text-white hover:bg-accent/10 transition-all flex items-center gap-1 shrink-0"
+        aria-label="Open trade history"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#808290]">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+        History
       </button>
 
       {/* Replay Controls */}

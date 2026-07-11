@@ -8,6 +8,7 @@ import Watchlist from './components/Watchlist'
 import OptionChain from './components/OptionChain'
 import AutoTradeModal from './components/AutoTradeModal'
 import StrategyGuideModal from './components/StrategyGuideModal'
+import TradeHistoryModal from './components/TradeHistoryModal'
 import { run } from './utils/strategyRunner'
 
 // ─── Login Screen Component (Glassmorphism & Rich Aesthetics) ────────────────
@@ -169,6 +170,7 @@ export default function App() {
   // ── Auto-trading state ──
   const [autoTradeModalOpen, setAutoTradeModalOpen] = useState(false)
   const [strategyGuideOpen, setStrategyGuideOpen] = useState(false)
+  const [tradeHistoryOpen, setTradeHistoryOpen] = useState(false)
   const [autoTradeState, setAutoTradeState] = useState({
     active: false,
     mode: 'PAPER', // 'PAPER' | 'LIVE'
@@ -1043,6 +1045,7 @@ export default function App() {
         onOpenSearch={() => { setSearchOpen(true); setSearchKey(k => k + 1) }}
         onLogout={handleLogout}
         onOpenStrategyGuide={() => setStrategyGuideOpen(true)}
+        onOpenHistory={() => setTradeHistoryOpen(true)}
         // Layout
         layoutMode={layoutMode}
         onLayoutModeChange={setLayoutMode}
@@ -1295,6 +1298,11 @@ export default function App() {
       <StrategyGuideModal
         isOpen={strategyGuideOpen}
         onClose={() => setStrategyGuideOpen(false)}
+      />
+      <TradeHistoryModal
+        isOpen={tradeHistoryOpen}
+        onClose={() => setTradeHistoryOpen(false)}
+        prices={prices}
       />
     </div>
   )

@@ -849,6 +849,48 @@ app.post('/api/autotrade/stop', authenticateToken, async (req, res) => {
     const session = activeResult.rows[0];
     const stoppedAt = new Date().toISOString();
 
+    // Find active open paper trade for this symbol and user
+    const openResult = await db.execute({
+      sql: "SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND status = 'OPEN' ORDER BY created_at DESC",
+      args: [req.user.id, session.symbol]
+    });
+
+    if (openResult.rows.length > 0) {
+      // Fetch latest price from candles as fallback
+      let executionPrice = openResult.rows[0].price;
+      try {
+        const candles = await fetchCandlesInternal(session.symbol, session.timeframe);
+        if (Array.isArray(candles) && candles.length > 0) {
+          executionPrice = candles[candles.length - 1].close;
+        }
+      } catch (e) { /* ok */ }
+
+      for (const activeTrade of openResult.rows) {
+        const tradePnl = activeTrade.direction === 'BUY' 
+          ? (executionPrice - activeTrade.price) * activeTrade.qty 
+          : (activeTrade.price - executionPrice) * activeTrade.qty;
+
+        await db.execute({
+          sql: "UPDATE paper_trades SET status = 'CLOSED', pnl = ?, closed_at = ?, comment = ? WHERE id = ?",
+          args: [tradePnl, stoppedAt, `Force Closed on Auto Trade Stop`, activeTrade.id]
+        });
+
+        // Log corresponding close alert
+        const displaySide = activeTrade.direction === 'BUY' ? 'CLOSE_BUY' : 'CLOSE_SELL';
+        const closeAlertId = `a_pt_force_${Date.now()}_${activeTrade.id}`;
+        const closeAlertMsg = `[Paper ${displaySide}] ${activeTrade.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — Force Closed`;
+        
+        await db.execute({
+          sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          args: [closeAlertId, req.user.id, session.symbol, closeAlertMsg, executionPrice, activeTrade.id, stoppedAt]
+        });
+      }
+    }
+
+    // Clear memory trackers
+    delete sessionActiveTrades[session.id];
+    delete sessionExecutedSignals[session.id];
+
     await db.execute({
       sql: 'UPDATE auto_trades SET active = 0, stopped_at = ? WHERE id = ?',
       args: [stoppedAt, session.id]
@@ -861,6 +903,14 @@ app.post('/api/autotrade/stop', authenticateToken, async (req, res) => {
       sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
       args: [alertId, req.user.id, session.symbol, alertMsg, session.id, stoppedAt]
     });
+
+    // Broadcast update via WebSocket so UI refreshes logs and clears live tag instantly
+    const updateMsg = JSON.stringify({ type: 'autotrade_update', symbol: session.symbol });
+    for (const client of browserClients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(updateMsg);
+      }
+    }
 
     res.json({ success: true, sessionId: session.id });
   } catch (err) {
@@ -1494,6 +1544,79 @@ function getUpstoxInterval(tf) {
   }
 }
 
+// Retrieve merged trade history (manual paper, auto paper, trade journal)
+app.get('/api/history/all-trades', authenticateToken, async (req, res) => {
+  try {
+    const paperResult = await db.execute({
+      sql: 'SELECT * FROM paper_trades WHERE user_id = ? ORDER BY created_at DESC',
+      args: [req.user.id]
+    });
+
+    const journalResult = await db.execute({
+      sql: 'SELECT * FROM trades WHERE user_id = ? ORDER BY created_at DESC',
+      args: [req.user.id]
+    });
+
+    const normalizedPaper = paperResult.rows.map(row => {
+      let isAuto = false;
+      let strategyName = '';
+      try {
+        if (row.comment && typeof row.comment === 'string' && row.comment.trim().startsWith('{')) {
+          const parsed = JSON.parse(row.comment);
+          if (parsed && parsed.strategyName) {
+            isAuto = true;
+            strategyName = parsed.strategyName;
+          }
+        }
+      } catch (e) {}
+
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        symbol: row.symbol,
+        direction: row.direction,
+        qty: row.qty,
+        price: row.price,
+        status: row.status,
+        pnl: row.pnl || 0,
+        created_at: row.created_at,
+        closed_at: row.closed_at,
+        comment: row.comment,
+        origin: 'paper',
+        isAuto,
+        strategyName
+      };
+    });
+
+    const normalizedJournal = journalResult.rows.map(row => {
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        symbol: row.symbol,
+        direction: row.direction,
+        qty: row.qty,
+        price: row.price,
+        status: row.status,
+        pnl: row.pnl || 0,
+        created_at: row.created_at,
+        closed_at: row.closed_at,
+        comment: row.comment,
+        origin: 'journal',
+        isAuto: false,
+        strategyName: ''
+      };
+    });
+
+    const merged = [...normalizedPaper, ...normalizedJournal].sort((a, b) => {
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+    res.json(merged);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get historical OHLC for chart init
 app.get('/api/history/:symbol', authenticateToken, async (req, res) => {
   const { symbol } = req.params;
@@ -1896,6 +2019,7 @@ app.get('/api/trades', authenticateToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // Webhook for Make.com execution updates
 app.post('/api/webhook/trade', async (req, res) => {
