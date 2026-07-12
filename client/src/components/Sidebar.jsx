@@ -714,9 +714,11 @@ function calculateGroupPnL(alerts) {
     const trade = parseAlertTradeDetails(al.message);
     if (!trade) continue;
     
+    const isClose = al.message.toLowerCase().includes('close');
     const { side, qty, price } = trade;
     
     if (position === 0) {
+      if (isClose) continue; // Ignore orphaned close alerts
       position = side === 'BUY' ? qty : -qty;
       avgPrice = price;
     } else if (position > 0) {
@@ -726,10 +728,7 @@ function calculateGroupPnL(alerts) {
       } else {
         const closedQty = Math.min(qty, position);
         totalRealizedPnL += closedQty * (price - avgPrice);
-        position -= qty;
-        if (position < 0) {
-          avgPrice = price;
-        }
+        position = Math.max(0, position - qty); // Clamp at 0
       }
     } else {
       if (side === 'SELL') {
@@ -738,10 +737,7 @@ function calculateGroupPnL(alerts) {
       } else {
         const closedQty = Math.min(qty, Math.abs(position));
         totalRealizedPnL += closedQty * (avgPrice - price);
-        position += qty;
-        if (position > 0) {
-          avgPrice = price;
-        }
+        position = Math.min(0, position + qty); // Clamp at 0
       }
     }
   }
@@ -759,9 +755,11 @@ function calculateGroupOpenPosition(alerts) {
     const trade = parseAlertTradeDetails(al.message);
     if (!trade) continue;
     
+    const isClose = al.message.toLowerCase().includes('close');
     const { side, qty, price } = trade;
     
     if (position === 0) {
+      if (isClose) continue; // Ignore orphaned close alerts
       position = side === 'BUY' ? qty : -qty;
       avgPrice = price;
     } else if (position > 0) {
@@ -769,14 +767,14 @@ function calculateGroupOpenPosition(alerts) {
         avgPrice = (avgPrice * position + price * qty) / (position + qty);
         position += qty;
       } else {
-        position -= qty;
+        position = Math.max(0, position - qty); // Clamp at 0
       }
     } else {
       if (side === 'SELL') {
         avgPrice = (avgPrice * Math.abs(position) + price * qty) / (Math.abs(position) + qty);
         position -= qty;
       } else {
-        position += qty;
+        position = Math.min(0, position + qty); // Clamp at 0
       }
     }
   }
