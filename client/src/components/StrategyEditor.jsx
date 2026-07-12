@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { run, validateCode } from '../utils/strategyRunner'
+import { transformHeikinAshi } from '../utils/candleTransformer'
 
 const DEFAULT_CODE = `// ─── Trade Desk Strategy Editor ────────────────────────────────
 // Available globals (no imports needed):
@@ -41,12 +42,25 @@ plot(ma, 'SMA 14', '#7c6af7')
 
 const TIMEFRAMES = ['1m','3m','5m','10m','15m','30m','1h','2h','4h','1d']
 
-export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
+export default function StrategyEditor({ activeSymbol, onStrategyResult, chartTimeframe, onTimeframeChange, chartStyle }) {
   const [code, setCode]               = useState(DEFAULT_CODE)
   const [strategies, setStrategies]   = useState([])  // list from backend
   const [currentId, setCurrentId]     = useState(null)
   const [currentName, setCurrentName] = useState('Untitled Strategy')
-  const [tf, setTf]                   = useState('5m')
+  const [tf, setTf]                   = useState(chartTimeframe || '5m')
+
+  useEffect(() => {
+    if (chartTimeframe) {
+      setTf(chartTimeframe)
+    }
+  }, [chartTimeframe])
+
+  const handleTfChange = (newTf) => {
+    setTf(newTf)
+    if (onTimeframeChange) {
+      onTimeframeChange(newTf)
+    }
+  }
   const [running, setRunning]         = useState(false)
   const [stats, setStats]             = useState(null)
   const [logs, setLogs]               = useState([])
@@ -149,7 +163,11 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
       setLogs([`[INFO] Running strategy on ${aggregated.length} bars…`])
 
       // Run strategy (synchronous)
-      const result = run(aggregated, code)
+      let finalCandles = aggregated
+      if (chartStyle === 'heikin_ashi') {
+        finalCandles = transformHeikinAshi(aggregated)
+      }
+      const result = run(finalCandles, code)
       setLogs(result.logs)
       setStats(result.stats)
       onStrategyResult({
@@ -164,7 +182,7 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
     } finally {
       setRunning(false)
     }
-  }, [activeSymbol, tf, code, onStrategyResult, currentId, currentName])
+  }, [activeSymbol, tf, code, onStrategyResult, currentId, currentName, chartStyle])
 
   // ── Clear signals ────────────────────────────────────────────────────────────
   const clearSignals = useCallback(() => {
@@ -393,7 +411,7 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult }) {
         {/* Timeframe */}
         <select
           value={tf}
-          onChange={e => setTf(e.target.value)}
+          onChange={e => handleTfChange(e.target.value)}
           className="ml-auto bg-[#1a1d24] border border-border text-[#e2e8f0] px-1.5 py-1 rounded text-[11px] focus:border-accent focus:outline-none"
         >
           {TIMEFRAMES.map(t => <option key={t} value={t}>{t}</option>)}

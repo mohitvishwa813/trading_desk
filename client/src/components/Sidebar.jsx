@@ -38,6 +38,9 @@ export default function Sidebar({
   onToggleCollapse,
   onStrategyResult,
   tradesRefreshKey,
+  chartTimeframe,
+  onTimeframeChange,
+  chartStyle,
 }) {
   const [activeTab, setActiveTab] = useState(() => {
     try { return localStorage.getItem(LS_TAB) || 'trade' } catch { return 'trade' }
@@ -134,7 +137,13 @@ export default function Sidebar({
             instrumentKey={instrumentKey}
           />
         ) : activeTab === 'terminal' ? (
-          <StrategyEditor activeSymbol={activeSymbol} onStrategyResult={onStrategyResult} />
+          <StrategyEditor 
+            activeSymbol={activeSymbol} 
+            onStrategyResult={onStrategyResult} 
+            chartTimeframe={chartTimeframe}
+            onTimeframeChange={onTimeframeChange}
+            chartStyle={chartStyle}
+          />
         ) : (
           <LogTabContent
             alerts={alerts}

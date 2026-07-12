@@ -1189,6 +1189,11 @@ export default function App() {
             onToggleCollapse={toggleSidebar}
             onStrategyResult={handleStrategyResult}
             tradesRefreshKey={tradesRefreshKey}
+            chartTimeframe={chartTimeframes[focusedChart] || '5m'}
+            onTimeframeChange={(newTf) => {
+              setChartTimeframes(prev => ({ ...prev, [focusedChart]: newTf }))
+            }}
+            chartStyle={chartStyles[focusedChart] || 'candles'}
           />
         </div>
       </div>
