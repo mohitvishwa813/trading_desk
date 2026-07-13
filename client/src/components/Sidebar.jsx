@@ -126,7 +126,7 @@ export default function Sidebar({
       </div>
 
       {/* ── Tab Content ── */}
-      <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
+      <div className="flex-1 overflow-hidden flex flex-col min-h-0">
         {activeTab === 'trade' ? (
           <TradeTabContent
             activeSymbol={activeSymbol}
@@ -698,8 +698,9 @@ async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, trigg
 /*  ALERT LOG                                                           */
 /* ================================================================== */
 function parseAlertTradeDetails(message) {
-  const regex = /\[(?:Paper|Live)\s+(BUY|SELL|CLOSE_BUY|CLOSE_SELL)\]\s+(\d+)\s+([A-Z0-9]+)?\s*@\s*₹?([\d.]+)/i;
-  const match = message.match(regex);
+  // Matches standard format: [Paper BUY] 100 BTCUSD @ ₹63822.01 (also supports symbols with spaces e.g. CRUDEOILM FUT 20 JUL 26)
+  const regexStandard = /\[(?:Paper|Live)\s+(BUY|SELL|CLOSE_BUY|CLOSE_SELL)\]\s+(\d+)\s+([^@]+)?\s*@\s*₹?([\d.]+)/i;
+  let match = message.match(regexStandard);
   if (match) {
     const side = match[1].toUpperCase();
     return {
@@ -708,6 +709,29 @@ function parseAlertTradeDetails(message) {
       price: parseFloat(match[4])
     };
   }
+
+  // Matches strategy runner format: "🟢 BUY ENTRY @ 7128.00"
+  const regexStrategyBuy = /(?:BUY ENTRY|Reverse Buy Exit)\s*@\s*₹?([\d.]+)/i;
+  match = message.match(regexStrategyBuy);
+  if (match) {
+    return {
+      side: 'BUY',
+      qty: 10,
+      price: parseFloat(match[1])
+    };
+  }
+
+  // Matches strategy runner format: "🔴 SELL ENTRY @ 7128.00"
+  const regexStrategySell = /(?:SELL ENTRY|Reverse Sell Exit)\s*@\s*₹?([\d.]+)/i;
+  match = message.match(regexStrategySell);
+  if (match) {
+    return {
+      side: 'SELL',
+      qty: 10,
+      price: parseFloat(match[1])
+    };
+  }
+
   return null;
 }
 
@@ -904,6 +928,17 @@ function AlertLog({ alerts, prices = {} }) {
     const hasTradeId = !!group.tradeId;
     const totalAlerts = group.alerts.length;
 
+    // Extract entry price from oldest alert in the group to display on card header
+    let avgTradePrice = null;
+    const sortedAlertsForPrice = [...group.alerts].sort((a, b) => new Date(a.timestamp || a.time) - new Date(b.timestamp || b.time));
+    for (const al of sortedAlertsForPrice) {
+      const details = parseAlertTradeDetails(al.message);
+      if (details) {
+        avgTradePrice = details.price;
+        break;
+      }
+    }
+
     return (
       <div 
         key={group.key}
@@ -919,7 +954,7 @@ function AlertLog({ alerts, prices = {} }) {
               {group.primarySignal}
             </span>
             <span className="text-xs font-bold text-[#e2e8f0]">
-              {group.symbol}
+              {group.symbol} {avgTradePrice !== null && `@ ₹${avgTradePrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}
             </span>
             {openPos && (
               <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded animate-pulse border ${
@@ -945,7 +980,7 @@ function AlertLog({ alerts, prices = {} }) {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[9px] text-[#5b5e70] font-mono">
-              {group.latestTime ? new Date(group.latestTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+              {group.latestTime ? new Date(group.latestTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false }) : ''}
             </span>
             <svg 
               width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
@@ -978,7 +1013,7 @@ function AlertLog({ alerts, prices = {} }) {
                       {al.message}
                     </div>
                     <div className="text-[9px] text-muted/60 mt-0.5 font-mono">
-                      {al.timestamp ? new Date(al.timestamp).toLocaleTimeString() : al.time || ''}
+                      {al.timestamp ? new Date(al.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : al.time || ''}
                     </div>
                   </div>
                 </div>
