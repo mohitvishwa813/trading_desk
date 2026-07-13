@@ -58,14 +58,14 @@ export default function TopBar({
   const replaySpeeds = [0.5, 1, 2, 5, 10]
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border-b border-border shrink-0">
+    <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border-b border-border shrink-0 overflow-x-auto scrollbar-none">
       {/* Brand */}
-      <div className="text-sm font-bold text-accent tracking-wider mr-1">TRADE DESK</div>
+      <div className="text-sm font-bold text-accent tracking-wider mr-1 hidden md:block">TRADE DESK</div>
 
       {/* Symbol Search Button */}
       <button
         onClick={onOpenSearch}
-        className="flex items-center gap-2 px-3 py-1.5 rounded text-sm border border-border bg-[#1E1E1E] hover:border-accent hover:bg-[#252525] transition-all"
+        className="flex items-center gap-2 px-3 py-1.5 rounded text-sm border border-border bg-[#1E1E1E] hover:border-accent hover:bg-[#252525] transition-all shrink-0"
         aria-label="Search symbols"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted">
@@ -82,14 +82,14 @@ export default function TopBar({
       {/* Option Chain Button */}
       <button
         onClick={() => onOpenOptionChain()}
-        className={`px-2.5 py-1.5 rounded text-[11px] font-bold tracking-wide border transition-colors ${
+        className={`px-2.5 py-1.5 rounded text-[11px] font-bold tracking-wide border transition-colors shrink-0 ${
           hasOptions
             ? 'bg-accent/15 text-accent border-accent/40 hover:bg-accent/30'
             : 'bg-transparent text-muted border-border hover:border-accent/30 hover:text-accent'
         }`}
         aria-label="Open option chain"
       >
-        Option Chain
+        Option <span className="hidden sm:inline">Chain</span>
       </button>
 
       {/* Candle Style Selector */}
@@ -100,7 +100,7 @@ export default function TopBar({
       )}
 
       {/* Layout Mode Switcher */}
-      <div className="flex gap-0.5 border border-border rounded ml-1">
+      <div className="hidden sm:flex gap-0.5 border border-border rounded ml-1">
         {layoutModes.map(lm => (
           <button
             key={lm.id}
@@ -121,7 +121,7 @@ export default function TopBar({
       {/* Watchlist Toggle */}
       <button
         onClick={onWatchlistToggle}
-        className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors ${
+        className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors shrink-0 ${
           watchlistOpen
             ? 'bg-accent/20 text-accent border-accent'
             : 'bg-transparent text-muted border-border hover:border-accent/50'
@@ -138,7 +138,7 @@ export default function TopBar({
       {/* Auto Trade Trigger */}
       <button
         onClick={onOpenAutoTradeSettings}
-        className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+        className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 shrink-0 ${
           autoTradeActive
             ? 'bg-emerald-950/40 text-emerald-400 border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.2)] animate-pulse'
             : 'bg-transparent text-muted border-border hover:border-accent/50 hover:text-white'
@@ -149,7 +149,7 @@ export default function TopBar({
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
         </svg>
-        Auto Trade
+        Auto<span className="hidden sm:inline"> Trade</span>
       </button>
 
       {/* Trade History Button */}
@@ -162,7 +162,7 @@ export default function TopBar({
           <circle cx="12" cy="12" r="10"/>
           <polyline points="12 6 12 12 16 14"/>
         </svg>
-        History
+        <span className="hidden sm:inline">History</span>
       </button>
 
       {/* Replay Controls */}
@@ -231,16 +231,16 @@ export default function TopBar({
       <div className="ml-auto" />
 
       {/* Connection Indicator */}
-      <div className="flex items-center gap-1.5">
-        <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green' : 'bg-red'}`} />
-        <span className="text-[10px] text-muted">{wsConnected ? 'Connected' : 'Disconnected'}</span>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green' : 'bg-red'}`} title={wsConnected ? 'Connected' : 'Disconnected'} />
+        <span className="text-[10px] text-muted hidden md:inline">{wsConnected ? 'Connected' : 'Disconnected'}</span>
       </div>
 
       {/* Clock */}
-      <div className="text-[10px] text-muted ml-2">{time}</div>
+      <div className="text-[10px] text-muted ml-2 hidden lg:block">{time}</div>
 
       {/* Profile Dropdown Trigger */}
-      <div className="relative ml-2">
+      <div className="relative ml-2 shrink-0">
         <button
           onClick={(e) => {
             e.stopPropagation()
@@ -251,7 +251,7 @@ export default function TopBar({
           <div className="w-4 h-4 rounded-full bg-[#7c6af7] text-white flex items-center justify-center text-[10px] font-extrabold uppercase">
             U
           </div>
-          <span>Profile</span>
+          <span className="hidden sm:inline">Profile</span>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-muted/60">
             <polyline points="6 9 12 15 18 9" />
           </svg>

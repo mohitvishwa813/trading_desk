@@ -10,6 +10,7 @@ import AutoTradeModal from './components/AutoTradeModal'
 import StrategyGuideModal from './components/StrategyGuideModal'
 import TradeHistoryModal from './components/TradeHistoryModal'
 import { run } from './utils/strategyRunner'
+import { transformHeikinAshi } from './utils/candleTransformer'
 
 // ─── Login Screen Component (Glassmorphism & Rich Aesthetics) ────────────────
 function LoginScreen({ onLoginSuccess }) {
@@ -165,6 +166,7 @@ export default function App() {
   const chartStrategiesRef = useRef({})
   const chartTimeframesRef = useRef(chartTimeframes)
   const candlesMapRef = useRef(candlesMap)
+  const chartStylesRef = useRef(null)
   const lastStrategyRunTimeRef = useRef({}) // chartIndex -> timestamp ms
 
   // ── Auto-trading state ──
@@ -271,7 +273,9 @@ export default function App() {
             .then(strat => {
               // Run strategy runner locally on whatever candles are currently loaded
               const currentCandles = candlesMapRef.current[focusedChart] || []
-              const result = currentCandles.length > 0 ? run(currentCandles, strat.code) : { signals: [], plots: [], lines: [], labels: [], dashboard: {} }
+              const activeStyle = chartStylesRef.current[focusedChart] || 'candles'
+              const finalCandles = activeStyle === 'heikin_ashi' ? transformHeikinAshi(currentCandles) : currentCandles
+              const result = finalCandles.length > 0 ? run(finalCandles, strat.code) : { signals: [], plots: [], lines: [], labels: [], dashboard: {} }
               setChartStrategies(prev => ({
                 ...prev,
                 [focusedChart]: {
@@ -567,6 +571,7 @@ export default function App() {
   chartStrategiesRef.current = chartStrategies
   chartTimeframesRef.current = chartTimeframes
   candlesMapRef.current = candlesMap
+  chartStylesRef.current = chartStyles
 
   // ── Active symbol derived from focused chart ──
   const activeSymbol = chartConfigs[focusedChart]?.symbol || ''
@@ -748,7 +753,9 @@ export default function App() {
 
                       if (isNewCandleBoundary || timeElapsed >= 5000) {
                         lastStrategyRunTimeRef.current[idx] = nowMs
-                        const result = run(updatedCandles, activeStrat.code)
+                        const activeStyle = chartStylesRef.current[idx] || 'candles'
+                        const finalCandles = activeStyle === 'heikin_ashi' ? transformHeikinAshi(updatedCandles) : updatedCandles
+                        const result = run(finalCandles, activeStrat.code)
                         setChartStrategies(prevStrats => ({
                           ...prevStrats,
                           [idx]: {
@@ -984,7 +991,9 @@ export default function App() {
             console.log('onCandlesLoaded index:', i, 'activeStrat:', activeStrat, 'candles count:', loadedCandles.length)
             if (activeStrat && activeStrat.code) {
               try {
-                const result = run(loadedCandles, activeStrat.code)
+                const activeStyle = chartStylesRef.current[i] || 'candles'
+                const finalCandles = activeStyle === 'heikin_ashi' ? transformHeikinAshi(loadedCandles) : loadedCandles
+                const result = run(finalCandles, activeStrat.code)
                 console.log('Strategy run result signals:', result?.signals?.length)
                 setChartStrategies(prevStrats => ({
                   ...prevStrats,
@@ -1265,7 +1274,9 @@ export default function App() {
                 .then(res => res.json())
                 .then(strat => {
                   const currentCandles = candlesMapRef.current[focusedChart] || []
-                  const result = currentCandles.length > 0 ? run(currentCandles, strat.code) : { signals: [], plots: [], lines: [], labels: [], dashboard: {} }
+                  const activeStyle = chartStylesRef.current[focusedChart] || 'candles'
+                  const finalCandles = activeStyle === 'heikin_ashi' ? transformHeikinAshi(currentCandles) : currentCandles
+                  const result = finalCandles.length > 0 ? run(finalCandles, strat.code) : { signals: [], plots: [], lines: [], labels: [], dashboard: {} }
                   setChartStrategies(prev => ({
                     ...prev,
                     [focusedChart]: {
