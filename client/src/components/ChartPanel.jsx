@@ -822,18 +822,29 @@ export default function ChartPanel({
   useEffect(() => {
     if (!candleSeriesRef.current || !liveCandles || liveCandles.length === 0) return
 
+    // Deduplicate and sort candles by time in ascending order to prevent lightweight-charts crashes
+    const sortedCandles = [...liveCandles].sort((a, b) => a.time - b.time)
+    const uniqueCandles = []
+    const seen = new Set()
+    for (const c of sortedCandles) {
+      if (c && c.time && !seen.has(c.time)) {
+        seen.add(c.time)
+        uniqueCandles.push(c)
+      }
+    }
+
     const style = chartStyle
-    const transformed = transformData(liveCandles, style)
+    const transformed = transformData(uniqueCandles, style)
     const activeSeries = getActiveSeries()
     if (!activeSeries) return
 
     // High performance check: is this a live tick updating the last candle, or a full symbol load?
     const isTickUpdate = loadedDataRef.current &&
-                         loadedDataRef.current.length === liveCandles.length &&
-                         loadedDataRef.current[loadedDataRef.current.length - 1]?.time === liveCandles[liveCandles.length - 1]?.time
+                         loadedDataRef.current.length === uniqueCandles.length &&
+                         loadedDataRef.current[loadedDataRef.current.length - 1]?.time === uniqueCandles[uniqueCandles.length - 1]?.time
 
     // Store live candles in ref for indicators
-    loadedDataRef.current = liveCandles
+    loadedDataRef.current = uniqueCandles
 
     if (isTickUpdate) {
       // Direct tick update (super fast, prevents whole chart redraw and strategy marker flickering)

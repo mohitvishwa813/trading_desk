@@ -120,7 +120,7 @@ export default function AutoTradeModal({
             <div className="flex items-center justify-between">
               <span className="text-[11px] text-[#808290] font-medium uppercase tracking-wider">Target Stock Symbol</span>
               <span className="text-sm font-bold text-emerald-400 font-mono bg-emerald-950/20 px-2.5 py-0.5 rounded border border-emerald-500/20">
-                {activeSymbol || 'Select Symbol'}
+                {(autoTradeState?.active ? autoTradeState.symbol : activeSymbol) || 'Select Symbol'}
               </span>
             </div>
             <div className="flex items-center justify-between border-t border-[#1b1e2a]/50 pt-2 mt-1">

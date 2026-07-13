@@ -270,7 +270,7 @@ export default function App() {
             .then(res => res.json())
             .then(strat => {
               // Run strategy runner locally on whatever candles are currently loaded
-              const currentCandles = candlesMap[focusedChart] || []
+              const currentCandles = candlesMapRef.current[focusedChart] || []
               const result = currentCandles.length > 0 ? run(currentCandles, strat.code) : { signals: [], plots: [], lines: [], labels: [], dashboard: {} }
               setChartStrategies(prev => ({
                 ...prev,
@@ -981,15 +981,21 @@ export default function App() {
 
             // If a strategy is applied, evaluate it on the loaded candles
             const activeStrat = chartStrategiesRef.current[i] || chartStrategies[i]
+            console.log('onCandlesLoaded index:', i, 'activeStrat:', activeStrat, 'candles count:', loadedCandles.length)
             if (activeStrat && activeStrat.code) {
-              const result = run(loadedCandles, activeStrat.code)
-              setChartStrategies(prevStrats => ({
-                ...prevStrats,
-                [i]: {
-                  ...prevStrats[i],
-                  ...result
-                }
-              }))
+              try {
+                const result = run(loadedCandles, activeStrat.code)
+                console.log('Strategy run result signals:', result?.signals?.length)
+                setChartStrategies(prevStrats => ({
+                  ...prevStrats,
+                  [i]: {
+                    ...prevStrats[i],
+                    ...result
+                  }
+                }))
+              } catch (err) {
+                console.error('Strategy run error:', err)
+              }
             }
           }}
         />
@@ -1258,20 +1264,18 @@ export default function App() {
               })
                 .then(res => res.json())
                 .then(strat => {
-                  const currentCandles = candlesMap[focusedChart] || []
-                  if (currentCandles.length > 0) {
-                    const result = run(currentCandles, strat.code)
-                    setChartStrategies(prev => ({
-                      ...prev,
-                      [focusedChart]: {
-                        ...result,
-                        strategyId: strat.id,
-                        strategyName: strat.name,
-                        code: strat.code,
-                        timeframe: config.timeframe
-                      }
-                    }))
-                  }
+                  const currentCandles = candlesMapRef.current[focusedChart] || []
+                  const result = currentCandles.length > 0 ? run(currentCandles, strat.code) : { signals: [], plots: [], lines: [], labels: [], dashboard: {} }
+                  setChartStrategies(prev => ({
+                    ...prev,
+                    [focusedChart]: {
+                      ...result,
+                      strategyId: strat.id,
+                      strategyName: strat.name,
+                      code: strat.code,
+                      timeframe: config.timeframe
+                    }
+                  }))
                 })
                 .catch(() => {})
 
