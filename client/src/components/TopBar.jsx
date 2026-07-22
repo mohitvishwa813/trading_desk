@@ -58,7 +58,7 @@ export default function TopBar({
   const replaySpeeds = [0.5, 1, 2, 5, 10]
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border-b border-border shrink-0 overflow-x-auto scrollbar-none">
+    <div className="relative z-30 flex items-center gap-2 px-3 py-1.5 bg-surface border-b border-border shrink-0 overflow-x-auto scrollbar-none">
       {/* Brand */}
       <div className="text-sm font-bold text-accent tracking-wider mr-1 hidden md:block">TRADE DESK</div>
 
@@ -258,7 +258,7 @@ export default function TopBar({
         </button>
 
         {profileOpen && (
-          <div className="absolute right-0 mt-1 w-44 bg-[#0a0d16] border border-[#222533] rounded shadow-2xl py-1 z-50 flex flex-col">
+          <div className="fixed right-3 top-[40px] w-44 bg-[#0a0d16] border border-[#222533] rounded shadow-2xl py-1 z-50 flex flex-col">
             <button
               onClick={() => {
                 setProfileOpen(false)
