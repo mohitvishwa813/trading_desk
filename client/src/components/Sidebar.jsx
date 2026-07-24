@@ -135,6 +135,7 @@ export default function Sidebar({
             prices={prices}
             tick={tick}
             instrumentKey={instrumentKey}
+            tradesRefreshKey={tradesRefreshKey}
           />
         ) : activeTab === 'terminal' ? (
           <StrategyEditor 
@@ -162,7 +163,7 @@ export default function Sidebar({
 /* ================================================================== */
 /*  TRADE TAB — existing content                                        */
 /* ================================================================== */
-function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instrumentKey }) {
+function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instrumentKey, tradesRefreshKey }) {
   return (
     <div className="flex flex-col min-h-0 flex-1 overflow-y-auto">
       <TradingPanel
@@ -172,6 +173,7 @@ function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instr
         tick={tick}
         instrumentKey={instrumentKey}
         onSendAlert={onSendAlert}
+        tradesRefreshKey={tradesRefreshKey}
       />
     </div>
   )
@@ -321,7 +323,7 @@ function TradeJournal({ trades, loading, prices, activeSymbol, price }) {
 /* ================================================================== */
 /*  TRADING PANEL                                                       */
 /* ================================================================== */
-function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSendAlert }) {
+function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSendAlert, tradesRefreshKey }) {
   const [tradingMode, setTradingMode] = useState('paper') // 'paper' | 'live' | null
 
   return (
@@ -340,6 +342,7 @@ function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSend
           tick={tick}
           instrumentKey={instrumentKey}
           onSendAlert={onSendAlert}
+          tradesRefreshKey={tradesRefreshKey}
         />
       ) : (
         <div className="px-3 py-4 text-[11px] text-muted text-center">
@@ -380,7 +383,7 @@ function ModeToggle({ value, onChange }) {
 /* ================================================================== */
 /*  TRADING FORM                                                        */
 /* ================================================================== */
-function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumentKey, onSendAlert }) {
+function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumentKey, onSendAlert, tradesRefreshKey }) {
   const [qty, setQty] = useState('25')
   const [orderType, setOrderType] = useState('Market')
   const [limitPrice, setLimitPrice] = useState('')
@@ -390,7 +393,7 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
   const [target, setTarget] = useState('')
   const [positions, setPositions] = useState(loadPositions)
 
-  // Fetch from database on mount
+  // Fetch from database on mount and updates
   useEffect(() => {
     const token = localStorage.getItem('token')
     if (!token) return
@@ -400,12 +403,12 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
     })
       .then(res => res.json())
       .then(data => {
-        if (data.paper_positions && data.paper_positions.length > 0) {
+        if (data.paper_positions) {
           setPositions(data.paper_positions)
         }
       })
       .catch(err => console.error('Error fetching paper positions:', err))
-  }, [])
+  }, [tradesRefreshKey])
 
   // Save to localStorage and database on update
   useEffect(() => {
@@ -732,6 +735,17 @@ function parseAlertTradeDetails(message) {
     };
   }
 
+  // Matches Risk Manager format: [Risk Trigger] Max loss ₹130 hit. Force-closed manual NIFTY FUT 28 JUL 26 at ₹23691.10
+  const regexRisk = /\[Risk\s+Trigger\].*Force-closed\s+(?:manual|auto)\s+(.*?)\s+at\s+₹?([\d.]+)/i;
+  match = message.match(regexRisk);
+  if (match) {
+    return {
+      side: 'CLOSE_ALL',
+      qty: 0,
+      price: parseFloat(match[2])
+    };
+  }
+
   return null;
 }
 
@@ -747,8 +761,18 @@ function calculateGroupPnL(alerts) {
     const trade = parseAlertTradeDetails(al.message);
     if (!trade) continue;
     
-    const isClose = al.message.toLowerCase().includes('close');
+    const isClose = al.message.toLowerCase().includes('close') || trade.side === 'CLOSE_ALL';
     const { side, qty, price } = trade;
+
+    if (side === 'CLOSE_ALL') {
+      if (position > 0) {
+        totalRealizedPnL += position * (price - avgPrice);
+      } else if (position < 0) {
+        totalRealizedPnL += Math.abs(position) * (avgPrice - price);
+      }
+      position = 0;
+      continue;
+    }
     
     if (position === 0) {
       if (isClose) continue; // Ignore orphaned close alerts
@@ -788,8 +812,13 @@ function calculateGroupOpenPosition(alerts) {
     const trade = parseAlertTradeDetails(al.message);
     if (!trade) continue;
     
-    const isClose = al.message.toLowerCase().includes('close');
+    const isClose = al.message.toLowerCase().includes('close') || trade.side === 'CLOSE_ALL';
     const { side, qty, price } = trade;
+
+    if (side === 'CLOSE_ALL') {
+      position = 0;
+      continue;
+    }
     
     if (position === 0) {
       if (isClose) continue; // Ignore orphaned close alerts

@@ -75,9 +75,8 @@ export default function TradeHistoryModal({ isOpen, onClose, prices = {} }) {
 
       // 2. Type filter
       if (filterType !== 'all') {
-        if (filterType === 'manual_paper' && !(t.origin === 'paper' && !t.isAuto)) return false
-        if (filterType === 'auto_paper' && !(t.origin === 'paper' && t.isAuto)) return false
-        if (filterType === 'journal' && t.origin !== 'journal') return false
+        if (filterType === 'manual' && t.origin !== 'journal') return false
+        if (filterType === 'auto' && t.origin !== 'paper') return false
       }
 
       // 3. Status filter
@@ -286,9 +285,8 @@ export default function TradeHistoryModal({ isOpen, onClose, prices = {} }) {
               className="bg-[#151922] border border-[#26293b] text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-accent cursor-pointer"
             >
               <option value="all">All Types</option>
-              <option value="manual_paper">Manual Paper Trade</option>
-              <option value="auto_paper">Auto Paper Trade</option>
-              <option value="journal">Trade Journal</option>
+              <option value="manual">Manual Trade</option>
+              <option value="auto">Auto Paper Trade</option>
             </select>
           </div>
 
@@ -400,13 +398,10 @@ export default function TradeHistoryModal({ isOpen, onClose, prices = {} }) {
               <tbody className="divide-y divide-[#1b1f2e] font-mono text-[11px] text-white">
                 {paginatedTrades.map(t => {
                   // Resolve type details
-                  let typeLabel = 'Paper (Manual)'
+                  let typeLabel = 'Manual Trade'
                   let typeClass = 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
-                  if (t.origin === 'journal') {
-                    typeLabel = 'Trade Journal'
-                    typeClass = 'bg-purple-500/10 text-purple-400 border-purple-500/20'
-                  } else if (t.origin === 'paper' && t.isAuto) {
-                    typeLabel = `Auto Paper`
+                  if (t.origin === 'paper') {
+                    typeLabel = 'Auto Paper'
                     typeClass = 'bg-sky-500/10 text-sky-400 border-sky-500/20'
                   }
 

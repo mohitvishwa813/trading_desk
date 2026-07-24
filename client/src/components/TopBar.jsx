@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import CandleSelector from './CandleSelector'
 
 export default function TopBar({
@@ -30,23 +30,52 @@ export default function TopBar({
   onOpenHistory = () => {},
   onLogout,
   onOpenStrategyGuide = () => {},
+  // Risk Manager
+  riskManager,
+  onSaveRiskManager,
 }) {
   // Clock state
   const [time, setTime] = useState(new Date().toLocaleTimeString())
   const [profileOpen, setProfileOpen] = useState(false)
+  const [riskOpen, setRiskOpen] = useState(false)
+  const [riskEnabled, setRiskEnabled] = useState(false)
+  const [riskMaxLoss, setRiskMaxLoss] = useState(100)
+  const [riskLeft, setRiskLeft] = useState(0)
+
+  const riskButtonRef = useRef(null)
 
   useEffect(() => {
     const id = setInterval(() => setTime(new Date().toLocaleTimeString()), 1000)
     return () => clearInterval(id)
   }, [])
 
-  // Auto close profile dropdown on click outside
+  // Calculate dropdown coordinate dynamically to align exactly below the button
   useEffect(() => {
-    if (!profileOpen) return
-    const handler = () => setProfileOpen(false)
+    if (riskOpen && riskButtonRef.current) {
+      const rect = riskButtonRef.current.getBoundingClientRect()
+      // Align left boundary with button left boundary
+      setRiskLeft(rect.left)
+    }
+  }, [riskOpen])
+
+  // Sync internal state when prop updates
+  useEffect(() => {
+    if (riskManager) {
+      setRiskEnabled(riskManager.enabled)
+      setRiskMaxLoss(riskManager.maxLoss)
+    }
+  }, [riskManager])
+
+  // Auto close dropdowns on click outside
+  useEffect(() => {
+    if (!profileOpen && !riskOpen) return
+    const handler = () => {
+      setProfileOpen(false)
+      setRiskOpen(false)
+    }
     window.addEventListener('click', handler)
     return () => window.removeEventListener('click', handler)
-  }, [profileOpen])
+  }, [profileOpen, riskOpen])
 
   const layoutModes = [
     { id: 'single', label: '1', icon: null },
@@ -151,6 +180,82 @@ export default function TopBar({
         </svg>
         Auto<span className="hidden sm:inline"> Trade</span>
       </button>
+
+      {/* Risk Manager Trigger */}
+      <div className="relative shrink-0">
+        <button
+          ref={riskButtonRef}
+          onClick={(e) => {
+            e.stopPropagation()
+            setRiskOpen(!riskOpen)
+          }}
+          className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 shrink-0 ${
+            riskEnabled
+              ? 'bg-rose-950/40 text-rose-400 border-rose-500/50 shadow-[0_0_8px_rgba(239,68,68,0.2)] animate-pulse'
+              : 'bg-transparent text-muted border-border hover:border-accent/50 hover:text-white'
+          }`}
+          aria-label="Risk Manager Settings"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${riskEnabled ? 'bg-rose-400' : 'bg-muted/60'}`} />
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          Risk<span className="hidden sm:inline"> Manager</span>{riskEnabled && ` (₹${riskMaxLoss})`}
+        </button>
+
+        {riskOpen && (
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{ left: `${riskLeft}px` }}
+            className="fixed w-52 bg-[#0a0d16] border border-[#222533] rounded shadow-2xl p-3.5 z-50 flex flex-col gap-3 font-sans text-xs top-[40px]"
+          >
+            <div className="font-bold text-slate-200 tracking-wide text-[10px] uppercase border-b border-[#1f2233] pb-1.5">
+              Risk Manager Settings
+            </div>
+
+            {/* Toggle */}
+            <div className="flex items-center justify-between">
+              <span className="text-[#a9adc1] text-[10px]">Enable Protection</span>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={riskEnabled} 
+                  onChange={(e) => setRiskEnabled(e.target.checked)} 
+                  className="sr-only peer"
+                />
+                <div className="w-7 h-4 bg-muted/20 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[#a9adc1] after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-rose-500 peer-checked:after:bg-white border border-[#222533]" />
+              </label>
+            </div>
+
+            {/* Limit Input */}
+            <div className="flex flex-col gap-1">
+              <span className="text-[#808290] text-[9px]">Max Cumulative Loss (₹)</span>
+              <input 
+                type="number" 
+                value={riskMaxLoss} 
+                onChange={(e) => setRiskMaxLoss(e.target.value)}
+                disabled={!riskEnabled}
+                className="w-full bg-[#0d0f14] border border-border text-[#e2e8f0] px-2 py-1 rounded font-mono text-xs focus:border-accent focus:outline-none disabled:opacity-40"
+                placeholder="100"
+              />
+            </div>
+
+            {/* Save Button */}
+            <button
+              onClick={async () => {
+                const finalLoss = Math.max(1, Number(riskMaxLoss) || 100)
+                await onSaveRiskManager({ enabled: riskEnabled, maxLoss: finalLoss })
+                setRiskMaxLoss(finalLoss)
+                setRiskOpen(false)
+              }}
+              className="w-full py-1.5 rounded font-bold text-[10px] bg-rose-600 hover:bg-rose-500 text-white transition-colors"
+            >
+              Save Configuration
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Trade History Button */}
       <button

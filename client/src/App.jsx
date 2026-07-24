@@ -182,6 +182,28 @@ export default function App() {
     symbol: '',
     sessionId: null // unique ID per auto trade session for alert grouping
   })
+
+  // ── Risk Manager Settings State ──
+  const [riskManager, setRiskManager] = useState({ enabled: false, maxLoss: 100 })
+
+  const handleSaveRiskManager = useCallback(async (settings) => {
+    setRiskManager(settings)
+    if (isAuthenticated) {
+      const token = localStorage.getItem('token')
+      try {
+        await fetch('/api/user/settings', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ risk_manager: settings })
+        })
+      } catch (err) {
+        console.error('Error saving risk manager settings:', err)
+      }
+    }
+  }, [isAuthenticated])
   const lastExecutedSignalTimeRef = useRef(null)
 
   // ── Symbol map from API ──
@@ -212,6 +234,9 @@ export default function App() {
         }
         if (data.ticker && data.ticker.length > 0) {
           setTickerItems(data.ticker)
+        }
+        if (data.risk_manager) {
+          setRiskManager(data.risk_manager)
         }
       })
       .catch(err => console.error('Error fetching user settings:', err))
@@ -1124,6 +1149,9 @@ export default function App() {
         // Auto Trade
         autoTradeActive={autoTradeState.active}
         onOpenAutoTradeSettings={() => setAutoTradeModalOpen(true)}
+        // Risk Manager
+        riskManager={riskManager}
+        onSaveRiskManager={handleSaveRiskManager}
       />
 
       {/* Main content area */}

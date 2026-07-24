@@ -21,6 +21,17 @@ const db = createClient({
   authToken: process.env.TURSO_DB_TOKEN || 'dummy'
 });
 
+// Database Migration: ensure user_settings has the risk_manager column
+(async () => {
+  try {
+    await db.execute('ALTER TABLE user_settings ADD COLUMN risk_manager TEXT');
+    console.log('✓ Database schema check: risk_manager column verified');
+  } catch (err) {
+    // Column already exists or table not ready, safely continue
+  }
+})();
+
+
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_key_12345';
 const MAKE_WEBHOOK_SECRET = process.env.MAKE_WEBHOOK_SECRET || 'fallback_webhook_secret_12345';
 
@@ -78,6 +89,9 @@ const symbolToKey = {};
 
 // Set of currently subscribed instrument keys (populated by frontend)
 const subscribedKeys = new Set();
+
+// Server-side global price cache for risk management and routing
+const serverPrices = {};
 
 // Demo mode state
 let currentMode = 'live';
@@ -186,6 +200,7 @@ function connectBinance() {
             volume: parseFloat(k.v),
             mode: currentMode.toUpperCase(), // Dynamically match server's mode so it isn't filtered out
           };
+          serverPrices['BTCUSD'] = tick.ltp;
           // Broadcast to all clients
           broadcast({ type: 'tick', data: tick });
         }
@@ -481,6 +496,7 @@ async function connectUpstox() {
         if (feedCount > 0) {
           const ticks = decodeUpstoxFeed(raw);
           for (const tick of ticks) {
+            serverPrices[tick.symbol] = tick.ltp;
             broadcast({ type: 'tick', data: tick });
             tickCount++;
             lastTickTime = Date.now();
@@ -786,6 +802,47 @@ app.post('/api/paper/orders', authenticateToken, async (req, res) => {
 
 // ─── Server-Side Auto Trade API Endpoints ────────────────────────────────────
 
+async function closeAllOpenAutoTradesForUser(userId) {
+  const stoppedAt = new Date().toISOString();
+  try {
+    const openResult = await db.execute({
+      sql: "SELECT * FROM paper_trades WHERE user_id = ? AND status = 'OPEN'",
+      args: [userId]
+    });
+
+    for (const activeTrade of openResult.rows) {
+      let executionPrice = activeTrade.price;
+      try {
+        const candles = await fetchCandlesInternal(activeTrade.symbol, '1m');
+        if (Array.isArray(candles) && candles.length > 0) {
+          executionPrice = candles[candles.length - 1].close;
+        }
+      } catch (e) {}
+
+      const tradePnl = activeTrade.direction === 'BUY' 
+        ? (executionPrice - activeTrade.price) * activeTrade.qty 
+        : (activeTrade.price - executionPrice) * activeTrade.qty;
+
+      await db.execute({
+        sql: "UPDATE paper_trades SET status = 'CLOSED', pnl = ?, closed_at = ?, comment = ? WHERE id = ?",
+        args: [tradePnl, stoppedAt, `Force Closed on Auto Trade Stop`, activeTrade.id]
+      });
+
+      // Log corresponding close alert
+      const displaySide = activeTrade.direction === 'BUY' ? 'CLOSE_BUY' : 'CLOSE_SELL';
+      const closeAlertId = `a_pt_force_${Date.now()}_${activeTrade.id}`;
+      const closeAlertMsg = `[Paper ${displaySide}] ${activeTrade.qty} ${activeTrade.symbol} @ ₹${executionPrice.toFixed(2)} — Force Closed`;
+      
+      await db.execute({
+        sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        args: [closeAlertId, userId, activeTrade.symbol, closeAlertMsg, executionPrice, activeTrade.id, stoppedAt]
+      });
+    }
+  } catch (err) {
+    console.error('Error in closeAllOpenAutoTradesForUser:', err.message);
+  }
+}
+
 // POST /api/autotrade/start - Start auto trade session
 app.post('/api/autotrade/start', authenticateToken, async (req, res) => {
   const { strategyId, symbol, qty, timeframe, mode, startTime, endTime, candleStyle } = req.body || {};
@@ -795,7 +852,10 @@ app.post('/api/autotrade/start', authenticateToken, async (req, res) => {
 
   try {
     const id = `session_${Date.now()}`;
-    // Deactivate previous active configurations
+    
+    // Deactivate previous active configurations and close all open trades
+    await closeAllOpenAutoTradesForUser(req.user.id);
+    
     await db.execute({
       sql: 'UPDATE auto_trades SET active = 0, stopped_at = ? WHERE user_id = ? AND active = 1',
       args: [new Date().toISOString(), req.user.id]
@@ -849,43 +909,8 @@ app.post('/api/autotrade/stop', authenticateToken, async (req, res) => {
     const session = activeResult.rows[0];
     const stoppedAt = new Date().toISOString();
 
-    // Find active open paper trade for this symbol and user
-    const openResult = await db.execute({
-      sql: "SELECT * FROM paper_trades WHERE user_id = ? AND symbol = ? AND status = 'OPEN' ORDER BY created_at DESC",
-      args: [req.user.id, session.symbol]
-    });
-
-    if (openResult.rows.length > 0) {
-      // Fetch latest price from candles as fallback
-      let executionPrice = openResult.rows[0].price;
-      try {
-        const candles = await fetchCandlesInternal(session.symbol, session.timeframe);
-        if (Array.isArray(candles) && candles.length > 0) {
-          executionPrice = candles[candles.length - 1].close;
-        }
-      } catch (e) { /* ok */ }
-
-      for (const activeTrade of openResult.rows) {
-        const tradePnl = activeTrade.direction === 'BUY' 
-          ? (executionPrice - activeTrade.price) * activeTrade.qty 
-          : (activeTrade.price - executionPrice) * activeTrade.qty;
-
-        await db.execute({
-          sql: "UPDATE paper_trades SET status = 'CLOSED', pnl = ?, closed_at = ?, comment = ? WHERE id = ?",
-          args: [tradePnl, stoppedAt, `Force Closed on Auto Trade Stop`, activeTrade.id]
-        });
-
-        // Log corresponding close alert
-        const displaySide = activeTrade.direction === 'BUY' ? 'CLOSE_BUY' : 'CLOSE_SELL';
-        const closeAlertId = `a_pt_force_${Date.now()}_${activeTrade.id}`;
-        const closeAlertMsg = `[Paper ${displaySide}] ${activeTrade.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — Force Closed`;
-        
-        await db.execute({
-          sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          args: [closeAlertId, req.user.id, session.symbol, closeAlertMsg, executionPrice, activeTrade.id, stoppedAt]
-        });
-      }
-    }
+    // Force close all open auto trades for the user
+    await closeAllOpenAutoTradesForUser(req.user.id);
 
     // Clear memory trackers
     delete sessionActiveTrades[session.id];
@@ -2178,6 +2203,7 @@ function startDemoTicks() {
       }
 
       const tickSymbol = keyToSymbol[inst.key] || inst.symbol;
+      serverPrices[tickSymbol] = gen.price;
       broadcast({
         type: 'tick',
         data: {
@@ -2230,7 +2256,8 @@ app.get('/api/user/settings', authenticateToken, async (req, res) => {
     res.json({
       watchlist: row.watchlist ? JSON.parse(row.watchlist) : [],
       ticker: row.ticker ? JSON.parse(row.ticker) : [],
-      paper_positions: row.paper_positions ? JSON.parse(row.paper_positions) : []
+      paper_positions: row.paper_positions ? JSON.parse(row.paper_positions) : [],
+      risk_manager: row.risk_manager ? JSON.parse(row.risk_manager) : { enabled: false, maxLoss: 100 }
     });
   } catch (err) {
     console.error('Error fetching user settings:', err.message);
@@ -2238,8 +2265,13 @@ app.get('/api/user/settings', authenticateToken, async (req, res) => {
   }
 });
 
+function escapeSqlString(str) {
+  if (str === null || str === undefined) return 'NULL';
+  return `'${String(str).replace(/'/g, "''")}'`;
+}
+
 app.post('/api/user/settings', authenticateToken, async (req, res) => {
-  const { watchlist, ticker, paper_positions } = req.body || {};
+  const { watchlist, ticker, paper_positions, risk_manager } = req.body || {};
   try {
     const currentResult = await db.execute({
       sql: 'SELECT * FROM user_settings WHERE user_id = ?',
@@ -2248,12 +2280,24 @@ app.post('/api/user/settings', authenticateToken, async (req, res) => {
 
     let finalWatchlist = watchlist !== undefined ? JSON.stringify(watchlist) : (currentResult.rows[0]?.watchlist || '[]');
     let finalTicker = ticker !== undefined ? JSON.stringify(ticker) : (currentResult.rows[0]?.ticker || '[]');
+    let finalRiskManager = risk_manager !== undefined ? JSON.stringify(risk_manager) : (currentResult.rows[0]?.risk_manager || '{"enabled":false,"maxLoss":100}');
     let finalPaperPositions = paper_positions !== undefined ? JSON.stringify(paper_positions) : (currentResult.rows[0]?.paper_positions || '[]');
 
-    await db.execute({
-      sql: 'INSERT OR REPLACE INTO user_settings (user_id, watchlist, ticker, paper_positions, updated_at) VALUES (?, ?, ?, ?, ?)',
-      args: [req.user.id, finalWatchlist, finalTicker, finalPaperPositions, new Date().toISOString()]
-    });
+    try {
+      const logLine = `[${new Date().toISOString()}] user: ${req.user.id} | body: ${JSON.stringify(req.body)} | db_row_before: ${JSON.stringify(currentResult.rows[0])} | final_rm: ${finalRiskManager}\n`;
+      fs.appendFileSync(path.join(__dirname, 'scratch', 'post_logs.txt'), logLine);
+    } catch (e) {}
+
+    const sql = `INSERT OR REPLACE INTO user_settings (user_id, watchlist, ticker, paper_positions, risk_manager, updated_at) VALUES (
+      ${escapeSqlString(req.user.id)},
+      ${escapeSqlString(finalWatchlist)},
+      ${escapeSqlString(finalTicker)},
+      ${escapeSqlString(finalPaperPositions)},
+      ${escapeSqlString(finalRiskManager)},
+      ${escapeSqlString(new Date().toISOString())}
+    )`;
+
+    await db.execute(sql);
 
     res.json({ success: true });
   } catch (err) {
@@ -2307,6 +2351,191 @@ app.get('/api/debug', authenticateToken, (req, res) => {
     sampleKeys,
   });
 });
+
+// ─── Global Risk Manager & Order Execution Engine (OEE) Force Exit ──────────
+
+async function forceExitAllPositions(userId, maxLoss) {
+  try {
+    console.warn(`🚨 [Global Risk Manager] Force Exit triggered for User ${userId} (Max Loss ₹${maxLoss} hit)`);
+
+    // 1. Fetch current settings to read manual positions array
+    const settingsRes = await db.execute({
+      sql: 'SELECT paper_positions FROM user_settings WHERE user_id = ?',
+      args: [userId]
+    });
+
+    let manualPositions = [];
+    if (settingsRes.rows.length > 0 && settingsRes.rows[0].paper_positions) {
+      try {
+        manualPositions = JSON.parse(settingsRes.rows[0].paper_positions);
+      } catch (e) {
+        manualPositions = [];
+      }
+    }
+
+    const timestamp = new Date().toISOString();
+
+    // 2. Process Manual Positions Exits (close and write to main DB trades log)
+    for (const pos of manualPositions) {
+      const currentPrice = serverPrices[pos.symbol] || pos.avgPrice || pos.ltp || 0;
+      const isBuy = pos.qty > 0;
+      const qtyAbs = Math.abs(pos.qty);
+      const posPnl = isBuy ? (currentPrice - pos.avgPrice) * qtyAbs : (pos.avgPrice - currentPrice) * qtyAbs;
+
+      // Log closed trade to trade journal
+      const tradeId = `t_rm_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      await db.execute({
+        sql: 'INSERT INTO trades (id, user_id, symbol, direction, qty, price, status, pnl, created_at, closed_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        args: [
+          tradeId,
+          userId,
+          pos.symbol,
+          isBuy ? 'BUY' : 'SELL',
+          qtyAbs,
+          pos.avgPrice,
+          'CLOSED',
+          posPnl,
+          pos.timestamp || timestamp,
+          timestamp,
+          `Closed by Server Risk Manager (Max Loss ₹${maxLoss} hit)`
+        ]
+      });
+
+      // Write risk alert
+      const alertId = `a_rm_manual_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const alertMsg = `[Risk Trigger] Max loss ₹${maxLoss} hit. Force-closed manual ${pos.symbol} at ₹${currentPrice.toFixed(2)}`;
+      await db.execute({
+        sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        args: [alertId, userId, pos.symbol, alertMsg, currentPrice, tradeId, timestamp]
+      });
+    }
+
+    // 3. Clear manual paper positions array in DB
+    await db.execute({
+      sql: 'UPDATE user_settings SET paper_positions = ? WHERE user_id = ?',
+      args: ['[]', userId]
+    });
+
+    // 4. Process Auto Paper positions (rows in paper_trades table)
+    const openAutoRes = await db.execute({
+      sql: "SELECT * FROM paper_trades WHERE user_id = ? AND status = 'OPEN'",
+      args: [userId]
+    });
+
+    for (const pos of openAutoRes.rows) {
+      const currentPrice = serverPrices[pos.symbol] || pos.price || 0;
+      const isBuy = pos.direction.toUpperCase() === 'BUY';
+      const posPnl = isBuy ? (currentPrice - pos.price) * pos.qty : (pos.price - currentPrice) * pos.qty;
+
+      // Close the open row
+      await db.execute({
+        sql: 'UPDATE paper_trades SET status = ?, pnl = ?, closed_at = ?, comment = ? WHERE id = ?',
+        args: ['CLOSED', posPnl, timestamp, `Closed by Server Risk Manager (Max Loss ₹${maxLoss} hit)`, pos.id]
+      });
+
+      // Write risk alert
+      const alertId = `a_rm_auto_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const alertMsg = `[Risk Trigger] Max loss ₹${maxLoss} hit. Force-closed auto ${pos.symbol} at ₹${currentPrice.toFixed(2)}`;
+      await db.execute({
+        sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        args: [alertId, userId, pos.symbol, alertMsg, currentPrice, pos.id, timestamp]
+      });
+    }
+
+    // 5. Live Exit Trigger (If webhook URL is set, send execution webhook payload)
+    if (MAKE_WEBHOOK_URL && MAKE_WEBHOOK_URL.startsWith('http')) {
+      await axios.post(MAKE_WEBHOOK_URL, {
+        symbol: 'GLOBAL',
+        strategy: 'risk_manager',
+        price: 0,
+        signal: 'EXIT_ALL',
+        message: `[Risk Trigger] Max loss ₹${maxLoss} hit. Force Exit triggered for all positions.`,
+        timestamp: timestamp,
+        source: 'Upstox Dashboard'
+      }).catch(err => console.error('OEE Webhook notification failed:', err.message));
+    }
+
+    // 6. Notify connected browser UI instances
+    broadcast(JSON.stringify({ type: 'webhook_trade_update' }));
+    broadcast(JSON.stringify({ type: 'autotrade_update', symbol: 'GLOBAL' }));
+
+  } catch (err) {
+    console.error('Error executing force exit:', err.message);
+  }
+}
+
+async function checkGlobalRiskLimits() {
+  try {
+    // 1. Fetch all user configurations that have settings
+    const usersRes = await db.execute('SELECT user_id, paper_positions, risk_manager FROM user_settings');
+    
+    for (const row of usersRes.rows) {
+      const userId = row.user_id;
+      let riskManager = { enabled: false, maxLoss: 100 };
+      try {
+        if (row.risk_manager) {
+          riskManager = JSON.parse(row.risk_manager);
+        }
+      } catch (e) {
+        continue;
+      }
+
+      if (!riskManager.enabled || !riskManager.maxLoss || riskManager.maxLoss <= 0) {
+        continue;
+      }
+
+      const maxLoss = Number(riskManager.maxLoss);
+      let totalFloatingPnl = 0;
+      let hasActivePositions = false;
+
+      // A. Calculate Floating P&L from manual paper trades JSON
+      let manualPositions = [];
+      try {
+        if (row.paper_positions) {
+          manualPositions = JSON.parse(row.paper_positions);
+        }
+      } catch (e) {}
+
+      for (const pos of manualPositions) {
+        const currentPrice = serverPrices[pos.symbol];
+        if (currentPrice) {
+          hasActivePositions = true;
+          const isBuy = pos.qty > 0;
+          const qtyAbs = Math.abs(pos.qty);
+          const pnl = isBuy ? (currentPrice - pos.avgPrice) * qtyAbs : (pos.avgPrice - currentPrice) * qtyAbs;
+          totalFloatingPnl += pnl;
+        }
+      }
+
+      // B. Calculate Floating P&L from auto paper trades database rows
+      const openAutoRes = await db.execute({
+        sql: "SELECT * FROM paper_trades WHERE user_id = ? AND status = 'OPEN'",
+        args: [userId]
+      });
+
+      for (const pos of openAutoRes.rows) {
+        const currentPrice = serverPrices[pos.symbol];
+        if (currentPrice) {
+          hasActivePositions = true;
+          const isBuy = pos.direction.toUpperCase() === 'BUY';
+          const pnl = isBuy ? (currentPrice - pos.price) * pos.qty : (pos.price - currentPrice) * pos.qty;
+          totalFloatingPnl += pnl;
+        }
+      }
+
+      // C. Evaluate Risk Breach
+      if (hasActivePositions && totalFloatingPnl <= -maxLoss) {
+        await forceExitAllPositions(userId, maxLoss);
+      }
+    }
+  } catch (err) {
+    console.error('Error in checkGlobalRiskLimits:', err.message);
+  }
+}
+
+// Global Risk Supervisor Loop runs every 5 seconds
+setInterval(checkGlobalRiskLimits, 5000);
+
 
 // SPA catch-all: serve React index.html for any non-API route
 app.get('*', (req, res) => {
