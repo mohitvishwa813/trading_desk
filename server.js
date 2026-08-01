@@ -864,12 +864,19 @@ async function closeAllOpenAutoTradesForUser(userId) {
         }
       }
 
+      // Find the active open trade ID for this session/symbol to align alert trade_id
+      const openTradeRes = await db.execute({
+        sql: "SELECT id FROM trades WHERE user_id = ? AND symbol = ? AND status = 'OPEN' ORDER BY created_at DESC LIMIT 1",
+        args: [userId, session.symbol]
+      });
+      const assignedTradeId = openTradeRes.rows[0]?.id || sessionActiveTrades[session.id] || `tr_stop_${Date.now()}`;
+
       // Log corresponding live close alert
       const liveCloseAlertId = `a_live_force_${Date.now()}_${session.id}`;
       const liveCloseAlertMsg = `[Live CLOSE] ${session.qty} ${session.symbol} @ ₹0.00 — Force Closed on Auto Trade Stop`;
       await db.execute({
         sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
-        args: [liveCloseAlertId, userId, session.symbol, liveCloseAlertMsg, session.id, stoppedAt]
+        args: [liveCloseAlertId, userId, session.symbol, liveCloseAlertMsg, assignedTradeId, stoppedAt]
       });
     }
   } catch (err) {
@@ -1264,8 +1271,8 @@ async function processAutoTrades() {
           if (sig.time < lastCandleTime - 120) return false;
           // B. Signal time must be greater than or equal to last executed time
           if (sig.time < tracker.lastTime) return false;
-          // C. If signal matches the last executed time, the type must not have been executed yet
-          if (sig.time === tracker.lastTime && tracker.executedTypes.has(sig.type.toUpperCase())) return false;
+          // C. If signal matches the last executed time, skip if already executed or if memory tracker was just reinitialized (prevents double triggers on server restart)
+          if (sig.time === tracker.lastTime && (tracker.executedTypes.size === 0 || tracker.executedTypes.has(sig.type.toUpperCase()))) return false;
           return true;
         });
 
@@ -1394,8 +1401,20 @@ async function processAutoTrades() {
             const alertMsg = `[Live ${side}] ${closedQty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
 
             if (targetWebhook && targetWebhook.startsWith('http')) {
-              await axios.post(targetWebhook, { content: `[LIVE AUTO] ${strat.name}: ${alertMsg}` })
-                .catch(err => console.error('Discord/Telegram webhook failed:', err.message));
+              await axios.post(targetWebhook, {
+                id: assignedTradeId || `t_live_${Date.now()}`,
+                userId: session.user_id,
+                symbol: session.symbol,
+                direction: side,
+                qty: closedQty,
+                price: executionPrice,
+                status: isCloseSignal ? 'CLOSED' : 'OPEN',
+                strategy: strat.name,
+                message: alertMsg,
+                tradeId: assignedTradeId || null,
+                content: `[LIVE AUTO] ${strat.name}: ${alertMsg}` // Maintain string content for Telegram/Discord format support
+              })
+              .catch(err => console.error('Live webhook dispatch failed:', err.message));
             }
 
             const alertId = `a_live_${Date.now()}`;
