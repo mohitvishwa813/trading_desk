@@ -702,12 +702,12 @@ async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, trigg
 /* ================================================================== */
 function parseAlertTradeDetails(message) {
   // Matches standard format: [Paper BUY] 100 BTCUSD @ ₹63822.01 (also supports symbols with spaces e.g. CRUDEOILM FUT 20 JUL 26)
-  const regexStandard = /\[(?:Paper|Live)\s+(BUY|SELL|CLOSE_BUY|CLOSE_SELL)\]\s+(\d+)\s+([^@]+)?\s*@\s*₹?([\d.]+)/i;
+  const regexStandard = /\[(?:Paper|Live)\s+(BUY|SELL|CLOSE_BUY|CLOSE_SELL|CLOSE)\]\s+(\d+)\s+([^@]+)?\s*@\s*₹?([\d.]+)/i;
   let match = message.match(regexStandard);
   if (match) {
     const side = match[1].toUpperCase();
     return {
-      side: side.startsWith('CLOSE') ? (side === 'CLOSE_BUY' ? 'SELL' : 'BUY') : side,
+      side: side === 'CLOSE' ? 'CLOSE' : (side.startsWith('CLOSE') ? (side === 'CLOSE_BUY' ? 'SELL' : 'BUY') : side),
       qty: parseInt(match[2], 10),
       price: parseFloat(match[4])
     };
@@ -762,7 +762,10 @@ function calculateGroupPnL(alerts) {
     if (!trade) continue;
     
     const isClose = al.message.toLowerCase().includes('close') || trade.side === 'CLOSE_ALL';
-    const { side, qty, price } = trade;
+    let { side, qty, price } = trade;
+    if (side === 'CLOSE') {
+      side = position > 0 ? 'SELL' : 'BUY';
+    }
 
     if (side === 'CLOSE_ALL') {
       if (position > 0) {
@@ -813,7 +816,10 @@ function calculateGroupOpenPosition(alerts) {
     if (!trade) continue;
     
     const isClose = al.message.toLowerCase().includes('close') || trade.side === 'CLOSE_ALL';
-    const { side, qty, price } = trade;
+    let { side, qty, price } = trade;
+    if (side === 'CLOSE') {
+      side = position > 0 ? 'SELL' : 'BUY';
+    }
 
     if (side === 'CLOSE_ALL') {
       position = 0;

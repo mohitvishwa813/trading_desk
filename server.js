@@ -805,6 +805,7 @@ app.post('/api/paper/orders', authenticateToken, async (req, res) => {
 async function closeAllOpenAutoTradesForUser(userId) {
   const stoppedAt = new Date().toISOString();
   try {
+    // 1. Close paper trades
     const openResult = await db.execute({
       sql: "SELECT * FROM paper_trades WHERE user_id = ? AND status = 'OPEN'",
       args: [userId]
@@ -836,6 +837,39 @@ async function closeAllOpenAutoTradesForUser(userId) {
       await db.execute({
         sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         args: [closeAlertId, userId, activeTrade.symbol, closeAlertMsg, executionPrice, activeTrade.id, stoppedAt]
+      });
+    }
+
+    // 2. Close active live sessions at broker via webhook
+    const activeLiveSessions = await db.execute({
+      sql: "SELECT * FROM auto_trades WHERE user_id = ? AND active = 1 AND mode = 'LIVE'",
+      args: [userId]
+    });
+
+    for (const session of activeLiveSessions.rows) {
+      if (MAKE_WEBHOOK_URL && MAKE_WEBHOOK_URL.startsWith('http')) {
+        try {
+          await axios.post(MAKE_WEBHOOK_URL, {
+            symbol: session.symbol,
+            strategy: session.strategy_id || 'manual_stop',
+            price: 0,
+            direction: 'EXIT',
+            qty: session.qty || 0,
+            status: 'CLOSED',
+            comment: 'Force Closed on Auto Trade Stop'
+          });
+          console.log(`🚨 Sent Live Exit Webhook for ${session.symbol} on session stop`);
+        } catch (err) {
+          console.error('Failed to send live exit webhook on session stop:', err.message);
+        }
+      }
+
+      // Log corresponding live close alert
+      const liveCloseAlertId = `a_live_force_${Date.now()}_${session.id}`;
+      const liveCloseAlertMsg = `[Live CLOSE] ${session.qty} ${session.symbol} @ ₹0.00 — Force Closed on Auto Trade Stop`;
+      await db.execute({
+        sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+        args: [liveCloseAlertId, userId, session.symbol, liveCloseAlertMsg, session.id, stoppedAt]
       });
     }
   } catch (err) {
