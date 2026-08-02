@@ -2495,7 +2495,33 @@ async function forceExitAllPositions(userId, maxLoss) {
       });
     }
 
-    // 5. Live Exit Trigger (If webhook URL is set, send execution webhook payload)
+    // 5. Process Live positions (rows in trades table)
+    const openLiveRes = await db.execute({
+      sql: "SELECT * FROM trades WHERE user_id = ? AND status = 'OPEN'",
+      args: [userId]
+    });
+
+    for (const pos of openLiveRes.rows) {
+      const currentPrice = serverPrices[pos.symbol] || pos.price || 0;
+      const isBuy = pos.direction.toUpperCase() === 'BUY';
+      const posPnl = isBuy ? (currentPrice - pos.price) * pos.qty : (pos.price - currentPrice) * pos.qty;
+
+      // Close the open row in trades table
+      await db.execute({
+        sql: 'UPDATE trades SET status = ?, pnl = ?, closed_at = ?, comment = ? WHERE id = ?',
+        args: ['CLOSED', posPnl, timestamp, `Closed by Server Risk Manager (Max Loss ₹${maxLoss} hit)`, pos.id]
+      });
+
+      // Write risk alert
+      const alertId = `a_rm_live_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const alertMsg = `[Risk Trigger] Max loss ₹${maxLoss} hit. Force-closed live ${pos.symbol} at ₹${currentPrice.toFixed(2)}`;
+      await db.execute({
+        sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        args: [alertId, userId, pos.symbol, alertMsg, currentPrice, pos.id, timestamp]
+      });
+    }
+
+    // 6. Live Exit Trigger (If webhook URL is set, send execution webhook payload)
     if (MAKE_WEBHOOK_URL && MAKE_WEBHOOK_URL.startsWith('http')) {
       await axios.post(MAKE_WEBHOOK_URL, {
         symbol: 'GLOBAL',
@@ -2508,7 +2534,7 @@ async function forceExitAllPositions(userId, maxLoss) {
       }).catch(err => console.error('OEE Webhook notification failed:', err.message));
     }
 
-    // 6. Notify connected browser UI instances
+    // 7. Notify connected browser UI instances
     broadcast(JSON.stringify({ type: 'webhook_trade_update' }));
     broadcast(JSON.stringify({ type: 'autotrade_update', symbol: 'GLOBAL' }));
 
@@ -2576,7 +2602,23 @@ async function checkGlobalRiskLimits() {
         }
       }
 
-      // C. Evaluate Risk Breach
+      // C. Calculate Floating P&L from live trades database rows
+      const openLiveRes = await db.execute({
+        sql: "SELECT * FROM trades WHERE user_id = ? AND status = 'OPEN'",
+        args: [userId]
+      });
+
+      for (const pos of openLiveRes.rows) {
+        const currentPrice = serverPrices[pos.symbol];
+        if (currentPrice) {
+          hasActivePositions = true;
+          const isBuy = pos.direction.toUpperCase() === 'BUY';
+          const pnl = isBuy ? (currentPrice - pos.price) * pos.qty : (pos.price - currentPrice) * pos.qty;
+          totalFloatingPnl += pnl;
+        }
+      }
+
+      // D. Evaluate Risk Breach
       if (hasActivePositions && totalFloatingPnl <= -maxLoss) {
         await forceExitAllPositions(userId, maxLoss);
       }
