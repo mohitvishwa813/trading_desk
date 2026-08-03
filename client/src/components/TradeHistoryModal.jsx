@@ -7,7 +7,7 @@ export default function TradeHistoryModal({ isOpen, onClose, prices = {} }) {
 
   // Filters State
   const [searchSymbol, setSearchSymbol] = useState('')
-  const [filterType, setFilterType] = useState('all') // all, manual_paper, auto_paper, journal
+  const [filterType, setFilterType] = useState('all') // all, manual, auto, live
   const [filterStatus, setFilterStatus] = useState('all') // all, OPEN, CLOSED
   const [filterDateRange, setFilterDateRange] = useState('all_time') // all_time, today, yesterday, 7_days, 30_days, custom
   const [customStartDate, setCustomStartDate] = useState('')
@@ -77,6 +77,7 @@ export default function TradeHistoryModal({ isOpen, onClose, prices = {} }) {
       if (filterType !== 'all') {
         if (filterType === 'manual' && t.origin !== 'journal') return false
         if (filterType === 'auto' && t.origin !== 'paper') return false
+        if (filterType === 'live' && t.origin !== 'live') return false
       }
 
       // 3. Status filter
@@ -287,6 +288,7 @@ export default function TradeHistoryModal({ isOpen, onClose, prices = {} }) {
               <option value="all">All Types</option>
               <option value="manual">Manual Trade</option>
               <option value="auto">Auto Paper Trade</option>
+              <option value="live">Auto Live Trade</option>
             </select>
           </div>
 
@@ -403,6 +405,9 @@ export default function TradeHistoryModal({ isOpen, onClose, prices = {} }) {
                   if (t.origin === 'paper') {
                     typeLabel = 'Auto Paper'
                     typeClass = 'bg-sky-500/10 text-sky-400 border-sky-500/20'
+                  } else if (t.origin === 'live') {
+                    typeLabel = 'Auto Live'
+                    typeClass = 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                   }
 
                   // Direction display

@@ -1667,6 +1667,8 @@ app.get('/api/history/all-trades', authenticateToken, async (req, res) => {
     });
 
     const normalizedJournal = journalResult.rows.map(row => {
+      // Detect if it's a live trade by checking if comment contains "Live"
+      const isLiveTrade = row.comment && row.comment.toLowerCase().includes('live');
       return {
         id: row.id,
         user_id: row.user_id,
@@ -1679,9 +1681,9 @@ app.get('/api/history/all-trades', authenticateToken, async (req, res) => {
         created_at: row.created_at,
         closed_at: row.closed_at,
         comment: row.comment,
-        origin: 'journal',
-        isAuto: false,
-        strategyName: ''
+        origin: isLiveTrade ? 'live' : 'journal',
+        isAuto: isLiveTrade,
+        strategyName: isLiveTrade ? 'LIVE Auto Trade' : ''
       };
     });
 
@@ -2113,6 +2115,8 @@ app.post('/api/webhook/trade', async (req, res) => {
 
   const now = new Date().toISOString();
   const activeUserId = userId || 'u_admin_default';
+  // Ensure comment contains "Live" to identify as live trade
+  const tradeComment = comment || `Live ${direction} ${qty} ${symbol}`;
 
   try {
     const check = await db.execute({
@@ -2124,15 +2128,15 @@ app.post('/api/webhook/trade', async (req, res) => {
       const closedAt = status === 'CLOSED' ? now : null;
       await db.execute({
         sql: 'UPDATE trades SET status = ?, pnl = ?, closed_at = ?, comment = ? WHERE id = ?',
-        args: [status, pnl || 0.0, closedAt, comment || null, id]
+        args: [status, pnl || 0.0, closedAt, tradeComment, id]
       });
       console.log(`📡 Webhook trade updated: ${id} - ${symbol} is now ${status}`);
     } else {
-      const tradeId = id || `t_${Date.now()}`;
+      const tradeId = id || `t_live_${Date.now()}`;
       const closedAt = status === 'CLOSED' ? now : null;
       await db.execute({
         sql: 'INSERT INTO trades (id, user_id, symbol, direction, qty, price, status, pnl, created_at, closed_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        args: [tradeId, activeUserId, symbol, direction, Number(qty), Number(price), status, pnl || 0.0, now, closedAt, comment || null]
+        args: [tradeId, activeUserId, symbol, direction, Number(qty), Number(price), status, pnl || 0.0, now, closedAt, tradeComment]
       });
       console.log(`📡 Webhook trade created: ${tradeId} - ${symbol} ${direction}`);
     }
