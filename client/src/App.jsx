@@ -760,7 +760,12 @@ export default function App() {
         const msg = JSON.parse(e.data)
         if (msg.type === 'tick') {
           const data = msg.data
-          setPrices(prev => ({ ...prev, [data.symbol]: data.ltp }))
+          setPrices(prev => ({ 
+            ...prev, 
+            [data.symbol]: data.ltp,
+            [data.instrumentKey]: data.ltp,
+            [data.symbol.toUpperCase()]: data.ltp
+          }))
           setTick(data)
           // Build tick cache keyed by BOTH instrumentKey AND symbol (for absolute mapping resilience)
           setTickCache(prev => {
@@ -769,10 +774,15 @@ export default function App() {
             if (data.symbol) next[data.symbol.toUpperCase()] = data
             return next
           })
-          // Track opening price (first tick per symbol)
+          // Track opening price (first tick per symbol and key)
           setOpenPrices(prev => {
             const baseOpen = data.close || data.open || data.ltp
-            return prev[data.symbol] !== undefined ? prev : { ...prev, [data.symbol]: baseOpen }
+            const key = data.instrumentKey
+            const updates = {}
+            if (prev[data.symbol] === undefined) updates[data.symbol] = baseOpen
+            if (key && prev[key] === undefined) updates[key] = baseOpen
+            if (prev[data.symbol.toUpperCase()] === undefined) updates[data.symbol.toUpperCase()] = baseOpen
+            return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev
           })
 
           // Real-time strategy auto-refresh: append tick and re-run active strategy
@@ -1249,13 +1259,14 @@ export default function App() {
         >
           <Sidebar
             activeSymbol={activeSymbol}
-            price={prices[activeSymbol] || 0}
+            price={prices[getInstrumentKey(activeSymbol)] || prices[activeSymbol] || prices[activeSymbol.toUpperCase()] || 0}
             alerts={alerts}
             webhookStatus={webhookStatus}
             onSendAlert={sendAlert}
             prices={prices}
             tick={tick}
             instrumentKey={getInstrumentKey(activeSymbol)}
+            getInstrumentKey={getInstrumentKey}
             sidebarCollapsed={sidebarCollapsed}
             onToggleCollapse={toggleSidebar}
             onStrategyResult={handleStrategyResult}

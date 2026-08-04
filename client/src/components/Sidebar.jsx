@@ -34,6 +34,7 @@ export default function Sidebar({
   prices,
   tick,
   instrumentKey,
+  getInstrumentKey,
   sidebarCollapsed,
   onToggleCollapse,
   onStrategyResult,
@@ -136,6 +137,7 @@ export default function Sidebar({
             tick={tick}
             instrumentKey={instrumentKey}
             tradesRefreshKey={tradesRefreshKey}
+            getInstrumentKey={getInstrumentKey}
           />
         ) : activeTab === 'terminal' ? (
           <StrategyEditor 
@@ -163,7 +165,7 @@ export default function Sidebar({
 /* ================================================================== */
 /*  TRADE TAB — existing content                                        */
 /* ================================================================== */
-function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instrumentKey, tradesRefreshKey }) {
+function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instrumentKey, tradesRefreshKey, getInstrumentKey }) {
   return (
     <div className="flex flex-col min-h-0 flex-1 overflow-y-auto">
       <TradingPanel
@@ -174,6 +176,7 @@ function TradeTabContent({ activeSymbol, price, onSendAlert, prices, tick, instr
         instrumentKey={instrumentKey}
         onSendAlert={onSendAlert}
         tradesRefreshKey={tradesRefreshKey}
+        getInstrumentKey={getInstrumentKey}
       />
     </div>
   )
@@ -323,7 +326,7 @@ function TradeJournal({ trades, loading, prices, activeSymbol, price }) {
 /* ================================================================== */
 /*  TRADING PANEL                                                       */
 /* ================================================================== */
-function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSendAlert, tradesRefreshKey }) {
+function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSendAlert, tradesRefreshKey, getInstrumentKey }) {
   const [tradingMode, setTradingMode] = useState('paper') // 'paper' | 'live' | null
 
   return (
@@ -343,6 +346,7 @@ function TradingPanel({ activeSymbol, price, prices, tick, instrumentKey, onSend
           instrumentKey={instrumentKey}
           onSendAlert={onSendAlert}
           tradesRefreshKey={tradesRefreshKey}
+          getInstrumentKey={getInstrumentKey}
         />
       ) : (
         <div className="px-3 py-4 text-[11px] text-muted text-center">
@@ -383,7 +387,7 @@ function ModeToggle({ value, onChange }) {
 /* ================================================================== */
 /*  TRADING FORM                                                        */
 /* ================================================================== */
-function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumentKey, onSendAlert, tradesRefreshKey }) {
+function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumentKey, onSendAlert, tradesRefreshKey, getInstrumentKey }) {
   const [qty, setQty] = useState('25')
   const [orderType, setOrderType] = useState('Market')
   const [limitPrice, setLimitPrice] = useState('')
@@ -430,24 +434,28 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
   useEffect(() => {
     if (!prices || Object.keys(prices).length === 0) return
     setPositions(prev =>
-      prev.map(p => ({
-        ...p,
-        ltp: prices[p.symbol] ?? p.ltp,
-      }))
+      prev.map(p => {
+        const key = getInstrumentKey ? getInstrumentKey(p.symbol) : p.symbol;
+        const livePrice = prices[key] || prices[p.symbol] || prices[p.symbol.toUpperCase()] || p.ltp;
+        return {
+          ...p,
+          ltp: livePrice,
+        };
+      })
     )
-  }, [prices])
+  }, [prices, getInstrumentKey])
 
   const priceDisabled   = orderType === 'Market' || orderType === 'SL-M'
   const triggerDisabled = orderType === 'Market' || orderType === 'Limit'
   const rr = useMemoRR(stopLoss, target, price)
 
   const placeBuyOrder = useCallback(() => {
-    placeOrder({ side: 'BUY', tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick })
-  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick])
+    placeOrder({ side: 'BUY', tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick, getInstrumentKey })
+  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick, getInstrumentKey])
 
   const placeSellOrder = useCallback(() => {
-    placeOrder({ side: 'SELL', tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick })
-  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick])
+    placeOrder({ side: 'SELL', tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick, getInstrumentKey })
+  }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick, getInstrumentKey])
 
   const closePosition = useCallback((id) => {
     setPositions(prev => {
@@ -643,7 +651,7 @@ function useMemoRR(sl, target, price) {
 /* ================================================================== */
 /*  PLACE ORDER                                                         */
 /* ================================================================== */
-async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick }) {
+async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick, getInstrumentKey }) {
   const qtyNum = parseInt(qty, 10)
   if (!qtyNum || qtyNum <= 0) {
     onSendAlert('INFO', `[${side}] Invalid quantity`)
@@ -651,8 +659,13 @@ async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, trigg
   }
 
   let fillPrice = parseFloat(price) || 0
-  if (!fillPrice && prices && prices[activeSymbol]) fillPrice = parseFloat(prices[activeSymbol])
-  if (!fillPrice && tick && (tick.symbol === activeSymbol || tick.instrumentKey === activeSymbol)) fillPrice = parseFloat(tick.ltp)
+  const activeKey = getInstrumentKey ? getInstrumentKey(activeSymbol) : activeSymbol
+  if (!fillPrice && prices) {
+    fillPrice = parseFloat(prices[activeKey]) || parseFloat(prices[activeSymbol]) || parseFloat(prices[activeSymbol.toUpperCase()]) || 0
+  }
+  if (!fillPrice && tick && (tick.symbol === activeSymbol || tick.instrumentKey === activeSymbol || tick.instrumentKey === activeKey)) {
+    fillPrice = parseFloat(tick.ltp)
+  }
 
   if (tradingMode === 'paper') {
     const pos = {

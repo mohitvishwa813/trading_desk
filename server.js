@@ -288,6 +288,18 @@ function connectCoinbase() {
   }
 }
 
+function waitForInstruments() {
+  return new Promise((resolve) => {
+    if (instrumentsLoaded) return resolve();
+    const interval = setInterval(() => {
+      if (instrumentsLoaded) {
+        clearInterval(interval);
+        resolve();
+      }
+    }, 200);
+  });
+}
+
 async function loadInstruments() {
   for (const url of INSTRUMENT_URLS) {
     try {
@@ -1718,6 +1730,7 @@ app.get('/api/history/all-trades', authenticateToken, async (req, res) => {
 
 // Get historical OHLC for chart init
 app.get('/api/history/:symbol', authenticateToken, async (req, res) => {
+  await waitForInstruments();
   const { symbol } = req.params;
   const tf = req.query.tf || '1m';
 
@@ -1913,25 +1926,17 @@ app.get('/api/history/:symbol', authenticateToken, async (req, res) => {
 
 // ─── Symbols Map Endpoint ───────────────────────────────────────────────────
 
-app.get('/api/instruments/symbols', authenticateToken, (req, res) => {
-  // Wait for instruments to load if not ready yet
-  if (!instrumentsLoaded) {
-    console.log('⏳ Instruments not loaded yet, waiting...');
-    setTimeout(() => {
-      console.log('📤 Returning symbolToKey - CRUDEOIL maps to:', symbolToKey['CRUDEOIL'], 'SBIN maps to:', symbolToKey['SBIN']);
-      console.log('   Sample mappings:', Object.entries(symbolToKey).slice(0, 5).map(([k,v]) => `${k}→${v}`).join(', '));
-      res.json(symbolToKey);
-    }, 2000);
-  } else {
-    console.log('📤 Returning symbolToKey - CRUDEOIL maps to:', symbolToKey['CRUDEOIL'], 'SBIN maps to:', symbolToKey['SBIN']);
-    console.log('   Sample mappings:', Object.entries(symbolToKey).slice(0, 5).map(([k,v]) => `${k}→${v}`).join(', '));
-    res.json(symbolToKey);
-  }
+app.get('/api/instruments/symbols', authenticateToken, async (req, res) => {
+  await waitForInstruments();
+  console.log('📤 Returning symbolToKey - CRUDEOIL maps to:', symbolToKey['CRUDEOIL'], 'SBIN maps to:', symbolToKey['SBIN']);
+  console.log('   Sample mappings:', Object.entries(symbolToKey).slice(0, 5).map(([k,v]) => `${k}→${v}`).join(', '));
+  res.json(symbolToKey);
 });
 
 // ─── Instrument Search Endpoint ─────────────────────────────────────────────
 
-app.get('/api/instruments/search', authenticateToken, (req, res) => {
+app.get('/api/instruments/search', authenticateToken, async (req, res) => {
+  await waitForInstruments();
   const { q, exchange, type, expiry } = req.query;
   let results = instrumentsList;
 
