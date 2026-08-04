@@ -342,6 +342,22 @@ async function loadInstruments() {
     const crudeInst = INSTRUMENTS.find(i => i.symbol === 'CRUDEOIL');
     if (crudeInst) crudeInst.key = activeCrudeKey;
   }
+
+  // Add mappings for full futures trading symbols (as they appear in alerts)
+  // These will match database alert symbols like "CRUDEOIL FUT 19 AUG 26"
+  const futuresSymbolMappings = [];
+  for (const [key, symbol] of Object.entries(keyToSymbol)) {
+    const inst = instrumentsByKey.get(key);
+    if (inst && inst.instrument_type && inst.instrument_type.toUpperCase().includes('FUT') && inst.tradingsymbol) {
+      futuresSymbolMappings.push([inst.tradingsymbol, key]);
+    }
+  }
+  for (const [tsym, key] of futuresSymbolMappings) {
+    if (!symbolToKey[tsym]) {
+      symbolToKey[tsym] = key;
+    }
+  }
+
   // If in demo mode, restart ticks so symbol names resolve to real trading symbols
   if (currentMode === 'demo') {
     startDemoTicks();
@@ -2232,22 +2248,6 @@ if (!keyToSymbol['NSE_INDEX|Nifty 50']) keyToSymbol['NSE_INDEX|Nifty 50'] = 'NIF
 
 if (!symbolToKey['BANKNIFTY']) symbolToKey['BANKNIFTY'] = 'NSE_INDEX|Nifty Bank';
 if (!keyToSymbol['NSE_INDEX|Nifty Bank']) keyToSymbol['NSE_INDEX|Nifty Bank'] = 'BANKNIFTY';
-
-// Add mappings for full futures trading symbols (as they appear in alerts)
-// These will match database alert symbols like "CRUDEOIL FUT 19 AUG 26"
-const futuresSymbolMappings = [];
-for (const [key, symbol] of Object.entries(keyToSymbol)) {
-  const instrumentsList_records = Array.from(instrumentsByKey.values());
-  const inst = instrumentsList_records.find(i => i.instrument_key === key && i.instrument_type && i.instrument_type.toUpperCase().includes('FUT'));
-  if (inst && inst.tradingsymbol) {
-    futuresSymbolMappings.push([inst.tradingsymbol, key]);
-  }
-}
-for (const [tsym, key] of futuresSymbolMappings) {
-  if (!symbolToKey[tsym]) {
-    symbolToKey[tsym] = key;
-  }
-}
 
 const demoPrices = {};
 const demoTickGenerators = {};
