@@ -430,6 +430,8 @@ function sendUpstoxSubscription() {
       data: { mode: 'full', instrumentKeys: regKeys },
     }));
     console.log(`📡 Sending sub: ${regKeys.length} regular — first key: ${regKeys[0]}`);
+    console.log(`   Full regKeys: ${regKeys.slice(0, 3).join(', ')}`);
+    console.log(`   keyToSymbol check: first key maps to symbol: ${keyToSymbol[regKeys[0]]}`);
     upstoxWS.send(msg);
   }
   if (optKeys.length > 0) {
@@ -871,12 +873,13 @@ async function closeAllOpenAutoTradesForUser(userId) {
       });
       const assignedTradeId = openTradeRes.rows[0]?.id || sessionActiveTrades[session.id] || `tr_stop_${Date.now()}`;
 
-      // Log corresponding live close alert
+      // Log corresponding live close alert with actual current price
       const liveCloseAlertId = `a_live_force_${Date.now()}_${session.id}`;
-      const liveCloseAlertMsg = `[Live CLOSE] ${session.qty} ${session.symbol} @ ₹0.00 — Force Closed on Auto Trade Stop`;
+      const closingPrice = serverPrices[session.symbol] || 0; // Use live market price, not 0
+      const liveCloseAlertMsg = `[Live CLOSE] ${session.qty} ${session.symbol} @ ₹${closingPrice.toFixed(2)} — Force Closed on Auto Trade Stop`;
       await db.execute({
-        sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
-        args: [liveCloseAlertId, userId, session.symbol, liveCloseAlertMsg, assignedTradeId, stoppedAt]
+        sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        args: [liveCloseAlertId, userId, session.symbol, liveCloseAlertMsg, closingPrice, assignedTradeId, stoppedAt]
       });
     }
   } catch (err) {
@@ -1895,7 +1898,19 @@ app.get('/api/history/:symbol', authenticateToken, async (req, res) => {
 // ─── Symbols Map Endpoint ───────────────────────────────────────────────────
 
 app.get('/api/instruments/symbols', authenticateToken, (req, res) => {
-  res.json(symbolToKey);
+  // Wait for instruments to load if not ready yet
+  if (!instrumentsLoaded) {
+    console.log('⏳ Instruments not loaded yet, waiting...');
+    setTimeout(() => {
+      console.log('📤 Returning symbolToKey - CRUDEOIL maps to:', symbolToKey['CRUDEOIL'], 'SBIN maps to:', symbolToKey['SBIN']);
+      console.log('   Sample mappings:', Object.entries(symbolToKey).slice(0, 5).map(([k,v]) => `${k}→${v}`).join(', '));
+      res.json(symbolToKey);
+    }, 2000);
+  } else {
+    console.log('📤 Returning symbolToKey - CRUDEOIL maps to:', symbolToKey['CRUDEOIL'], 'SBIN maps to:', symbolToKey['SBIN']);
+    console.log('   Sample mappings:', Object.entries(symbolToKey).slice(0, 5).map(([k,v]) => `${k}→${v}`).join(', '));
+    res.json(symbolToKey);
+  }
 });
 
 // ─── Instrument Search Endpoint ─────────────────────────────────────────────
@@ -2217,6 +2232,22 @@ if (!keyToSymbol['NSE_INDEX|Nifty 50']) keyToSymbol['NSE_INDEX|Nifty 50'] = 'NIF
 
 if (!symbolToKey['BANKNIFTY']) symbolToKey['BANKNIFTY'] = 'NSE_INDEX|Nifty Bank';
 if (!keyToSymbol['NSE_INDEX|Nifty Bank']) keyToSymbol['NSE_INDEX|Nifty Bank'] = 'BANKNIFTY';
+
+// Add mappings for full futures trading symbols (as they appear in alerts)
+// These will match database alert symbols like "CRUDEOIL FUT 19 AUG 26"
+const futuresSymbolMappings = [];
+for (const [key, symbol] of Object.entries(keyToSymbol)) {
+  const instrumentsList_records = Array.from(instrumentsByKey.values());
+  const inst = instrumentsList_records.find(i => i.instrument_key === key && i.instrument_type && i.instrument_type.toUpperCase().includes('FUT'));
+  if (inst && inst.tradingsymbol) {
+    futuresSymbolMappings.push([inst.tradingsymbol, key]);
+  }
+}
+for (const [tsym, key] of futuresSymbolMappings) {
+  if (!symbolToKey[tsym]) {
+    symbolToKey[tsym] = key;
+  }
+}
 
 const demoPrices = {};
 const demoTickGenerators = {};

@@ -213,11 +213,14 @@ export default function App() {
   // Fetch symbol map and user settings on mount
   useEffect(() => {
     if (!isAuthenticated) return
-    
+
     // Fetch symbols mapping
     fetch('/api/instruments/symbols')
       .then(r => r.json())
       .then(data => {
+        console.log('📊 Fetched symbolMap:', data)
+        console.log('CRUDEOIL maps to:', data['CRUDEOIL'])
+        console.log('SBIN maps to:', data['SBIN'])
         setSymbolMap(data || {})
         setSymbolsReady(true)
       })
@@ -570,10 +573,34 @@ export default function App() {
       if (key) keysToSub.add(key)
     }
 
+    // 4. Open position symbols from alerts - ensures live P&L calculation
+    const symbolCounts = {}
+    for (const alert of alerts) {
+      if (alert.symbol && alert.symbol.trim()) {
+        symbolCounts[alert.symbol] = (symbolCounts[alert.symbol] || 0) + 1
+      }
+    }
+
+    for (const symbol of Object.keys(symbolCounts)) {
+      let resolvedSymbol = symbol.toUpperCase().replace(/[\s_-]/g, '')
+      if (resolvedSymbol === 'NIFTY50') resolvedSymbol = 'NIFTY'
+      if (resolvedSymbol === 'STATEBANK' || resolvedSymbol === 'STATEBANKOFINDIA') resolvedSymbol = 'SBIN'
+
+      // Try multiple resolution strategies
+      let key = getInstrumentKey(symbol) // Try full symbol first (for "CRUDEOIL FUT 19 AUG 26" format)
+      if (!key) key = getInstrumentKey(resolvedSymbol) // Try cleaned symbol (for "CRUDEOIL" format)
+      if (!key && symbol.includes(' FUT ')) {
+        // For futures like "CRUDEOIL FUT 19 AUG 26", extract commodity name
+        const commodityName = symbol.split(' FUT ')[0].toUpperCase()
+        key = getInstrumentKey(commodityName)
+      }
+      if (key) keysToSub.add(key)
+    }
+
     if (keysToSub.size > 0) {
       ws.send(JSON.stringify({ type: 'subscribe_all', keys: Array.from(keysToSub) }))
     }
-  }, [chartConfigs, watchlistItems, tickerItems, getInstrumentKey, wsConnected])
+  }, [chartConfigs, watchlistItems, tickerItems, alerts, getInstrumentKey, wsConnected])
 
   // ── Indicators per chart ──
   const [chartIndicators, setChartIndicators] = useState({})
@@ -827,9 +854,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!isAuthenticated) return
     connectWS()
     return () => wsRef.current?.close()
-  }, [connectWS])
+  }, [connectWS, isAuthenticated])
 
   // ── Send alert ──
   const sendAlert = useCallback(async (signal, customMsg) => {
