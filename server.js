@@ -1427,35 +1427,97 @@ async function processAutoTrades() {
               });
             }
           } else {
-            // Live webhook
+            // Live mode execution
             const targetWebhook = process.env.DISCORD_TELEGRAM_WEBHOOK_URL || MAKE_WEBHOOK_URL;
-            const alertMsg = `[Live ${side}] ${closedQty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
 
-            if (targetWebhook && targetWebhook.startsWith('http')) {
-              await axios.post(targetWebhook, {
-                id: assignedTradeId || `t_live_${Date.now()}`,
-                userId: session.user_id,
-                symbol: session.symbol,
-                direction: side,
-                qty: closedQty,
-                price: executionPrice,
-                status: isCloseSignal ? 'CLOSED' : 'OPEN',
-                strategy: strat.name,
-                message: alertMsg,
-                tradeId: assignedTradeId || null,
-                content: `[LIVE AUTO] ${strat.name}: ${alertMsg}` // Maintain string content for Telegram/Discord format support
-              })
-              .catch(err => console.error('Live webhook dispatch failed:', err.message));
-            }
-
-            const alertId = `a_live_${Date.now()}`;
-            await db.execute({
-              sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, assignedTradeId, new Date().toISOString()]
+            // Check if there is an existing open live trade in database
+            const openLiveTradeRes = await db.execute({
+              sql: "SELECT * FROM trades WHERE user_id = ? AND symbol = ? AND status = 'OPEN' ORDER BY created_at DESC LIMIT 1",
+              args: [session.user_id, session.symbol]
             });
 
-            if (isCloseSignal && isFullClose) {
+            const activeLiveTrade = openLiveTradeRes.rows.length > 0 ? openLiveTradeRes.rows[0] : null;
+
+            // 1. REVERSE SIGNAL & CLOSE HANDLING:
+            // If an active open live trade exists and a close or reverse signal comes
+            if (activeLiveTrade && (isCloseSignal || activeLiveTrade.direction !== side)) {
+              const oldPrice = activeLiveTrade.price;
+              const liveTradePnl = activeLiveTrade.direction === 'BUY' 
+                ? (executionPrice - oldPrice) * closedQty 
+                : (oldPrice - executionPrice) * closedQty;
+
+              const closeAlertMsg = `[Live CLOSE_${activeLiveTrade.direction}] ${closedQty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${isCloseSignal ? strat.name : `Reverse Signal (${side})`}`;
+
+              // Dispatch Exit Webhook to Bridge Platform
+              if (targetWebhook && targetWebhook.startsWith('http')) {
+                await axios.post(targetWebhook, {
+                  id: activeLiveTrade.id,
+                  userId: session.user_id,
+                  symbol: session.symbol,
+                  direction: 'EXIT',
+                  qty: closedQty,
+                  price: executionPrice,
+                  status: 'CLOSED',
+                  strategy: strat.name,
+                  message: closeAlertMsg,
+                  tradeId: activeLiveTrade.id,
+                  content: `[LIVE AUTO] ${strat.name}: ${closeAlertMsg}`
+                }).catch(err => console.error('Live reverse exit webhook dispatch failed:', err.message));
+              }
+
+              // Insert Close Alert Log
+              const closeAlertId = `a_live_close_${Date.now()}`;
+              await db.execute({
+                sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                args: [closeAlertId, session.user_id, session.symbol, closeAlertMsg, executionPrice, activeLiveTrade.id, new Date().toISOString()]
+              });
+
+              // Update Trades table status to CLOSED
+              await db.execute({
+                sql: "UPDATE trades SET status = 'CLOSED', pnl = ?, closed_at = ?, comment = ? WHERE id = ?",
+                args: [liveTradePnl, new Date().toISOString(), isCloseSignal ? `Auto Trade closed via: ${strat.name}` : `Closed via Reverse Signal (${side})`, activeLiveTrade.id]
+              });
+
               delete sessionActiveTrades[session.id];
+            }
+
+            // 2. NEW ENTRY SIGNAL HANDLING:
+            if (!isCloseSignal && (!activeLiveTrade || activeLiveTrade.direction !== side)) {
+              const newLivePositionId = `t_live_${Date.now()}`;
+              assignedTradeId = newLivePositionId;
+              sessionActiveTrades[session.id] = newLivePositionId;
+
+              const alertMsg = `[Live ${side}] ${session.qty} ${session.symbol} @ ₹${executionPrice.toFixed(2)} — ${strat.name}`;
+
+              // Dispatch Entry Webhook to Bridge Platform
+              if (targetWebhook && targetWebhook.startsWith('http')) {
+                await axios.post(targetWebhook, {
+                  id: newLivePositionId,
+                  userId: session.user_id,
+                  symbol: session.symbol,
+                  direction: side,
+                  qty: session.qty,
+                  price: executionPrice,
+                  status: 'OPEN',
+                  strategy: strat.name,
+                  message: alertMsg,
+                  tradeId: newLivePositionId,
+                  content: `[LIVE AUTO] ${strat.name}: ${alertMsg}`
+                }).catch(err => console.error('Live entry webhook dispatch failed:', err.message));
+              }
+
+              // Insert Entry Alert Log
+              const alertId = `a_live_${Date.now()}`;
+              await db.execute({
+                sql: 'INSERT INTO alerts (id, user_id, symbol, message, price, trade_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                args: [alertId, session.user_id, session.symbol, alertMsg, executionPrice, newLivePositionId, new Date().toISOString()]
+              });
+
+              // Insert Open Trade in trades table
+              await db.execute({
+                sql: 'INSERT INTO trades (id, user_id, symbol, direction, qty, price, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                args: [newLivePositionId, session.user_id, session.symbol, side, session.qty, executionPrice, 'OPEN', new Date().toISOString(), `Live Auto Trade (${strat.name})`]
+              });
             }
           }
 
