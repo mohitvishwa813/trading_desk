@@ -605,6 +605,23 @@ app.get('/api/health', (req, res) => {
 app.post('/api/alert', authenticateToken, async (req, res) => {
   const { symbol, strategy, price, signal, message } = req.body;
 
+  // Check active auto_trades session mode from database
+  try {
+    const activeSessionRes = await db.execute({
+      sql: "SELECT mode FROM auto_trades WHERE user_id = ? AND active = 1 ORDER BY created_at DESC LIMIT 1",
+      args: [req.user.id]
+    });
+
+    const activeMode = activeSessionRes.rows.length > 0 ? activeSessionRes.rows[0].mode : null;
+
+    // Skip sending to external live webhook if session mode is PAPER or if no active LIVE session exists
+    if (!activeMode || activeMode.toUpperCase() !== 'LIVE') {
+      return res.json({ success: true, note: 'Webhook skipped: Auto trade mode is not LIVE' });
+    }
+  } catch (dbErr) {
+    console.error('Error checking auto trade mode in /api/alert:', dbErr.message);
+  }
+
   if (!MAKE_WEBHOOK_URL || MAKE_WEBHOOK_URL.includes('YOUR_WEBHOOK')) {
     return res.json({ success: false, error: 'Make.com webhook URL not configured in .env' });
   }
