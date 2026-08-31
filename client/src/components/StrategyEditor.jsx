@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { run, validateCode } from '../utils/strategyRunner'
-import { transformHeikinAshi } from '../utils/candleTransformer'
+import { transformHeikinAshi, transformRenko } from '../utils/candleTransformer'
 
 const DEFAULT_CODE = `// ─── Trade Desk Strategy Editor ────────────────────────────────
 // Available globals (no imports needed):
@@ -38,6 +38,25 @@ for (let i = 1; i < bars.length; i++) {
 }
 
 plot(ma, 'SMA 14', '#7c6af7')
+`
+
+const RENKO_FLIP_CODE = `// ─── Renko Color Flip Strategy ─────────────────────────
+// Rules:
+// 1. When a Renko brick closes GREEN (close > open), trigger BUY entry on next brick.
+// 2. When a Renko brick closes RED (close < open), trigger SELL entry on next brick (Flip position).
+// 3. Runs continuously on live charts and backtesting!
+// ────────────────────────────────────────────────────────
+
+for (let i = 1; i < bars.length; i++) {
+  const isGreenPrev = close[i - 1] > open[i - 1]
+  const isRedPrev   = close[i - 1] < open[i - 1]
+
+  if (isGreenPrev) {
+    strategy.buy(i, 'Renko BUY', { qty: 1 })
+  } else if (isRedPrev) {
+    strategy.sell(i, 'Renko SELL', { qty: 1 })
+  }
+}
 `
 
 const TIMEFRAMES = ['1m','3m','5m','10m','15m','30m','1h','2h','4h','1d']
@@ -166,6 +185,9 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult, chartTi
       let finalCandles = aggregated
       if (chartStyle === 'heikin_ashi') {
         finalCandles = transformHeikinAshi(aggregated)
+      } else if (chartStyle === 'renko') {
+        const renkoConfig = JSON.parse(localStorage.getItem('renkoConfig') || '{"method":"traditional","boxSize":10,"atrLength":14}')
+        finalCandles = transformRenko(aggregated, renkoConfig)
       }
       const result = run(finalCandles, code)
       setLogs(result.logs)
@@ -307,6 +329,21 @@ export default function StrategyEditor({ activeSymbol, onStrategyResult, chartTi
           title="New strategy"
           className="shrink-0 px-1.5 py-1 rounded text-[10px] text-muted hover:text-[#e2e8f0] bg-[#1a1d24] border border-border hover:border-accent transition-colors"
         >+ New</button>
+
+        {/* Load Renko Flip Template */}
+        <button
+          onClick={() => {
+            setCurrentId(null)
+            setCurrentName('Renko Color Flip Strategy')
+            setCode(RENKO_FLIP_CODE)
+            setDirty(true)
+            setLogs(['[INFO] Loaded Renko Color Flip Strategy template'])
+          }}
+          title="Load Renko Color Flip Strategy Code"
+          className="shrink-0 px-2 py-1 rounded text-[10px] font-semibold text-[#4f9cf9] bg-[#2962ff]/15 border border-[#2962ff]/40 hover:bg-[#2962ff]/30 transition-colors"
+        >
+          ⚡ Renko Flip
+        </button>
 
         {/* Wide Code Editor Overlay Toggle */}
         <button

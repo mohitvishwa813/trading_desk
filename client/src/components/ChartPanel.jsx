@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createChart } from 'lightweight-charts'
 import CandleSelector from './CandleSelector'
+import RenkoSettingsModal from './RenkoSettingsModal'
 import TickerStrip from './TickerStrip'
 import DrawingTools from './DrawingTools'
 import {
@@ -95,12 +96,12 @@ function computeHeikinAshi(candles) {
   return ha
 }
 
-function transformData(candles, style, renkoBrickSize = 10) {
+function transformData(candles, style, renkoConfig = { method: 'traditional', boxSize: 10, atrLength: 14 }) {
   if (style === 'heikin_ashi') {
     return transformHeikinAshi(candles)
   }
   if (style === 'renko') {
-    return transformRenko(candles, renkoBrickSize)
+    return transformRenko(candles, renkoConfig)
   }
   if (style === 'line_break') {
     return transformLineBreak(candles, 3)
@@ -560,6 +561,7 @@ export default function ChartPanel({
   const onDrawingsChangeRef = useRef(onDrawingsChange)
   onDrawingsChangeRef.current = onDrawingsChange
   const hasInitialFitRef = useRef(false)
+  const prevStyleRef = useRef(chartStyle)
 
   // Stable refs so effects/callbacks always read latest value without recreating
   const tfRef = useRef(tf)
@@ -654,6 +656,17 @@ export default function ChartPanel({
     }
   }, [applyToSeries])
 
+  const [renkoModalOpen, setRenkoModalOpen] = useState(false)
+  const [renkoConfig, setRenkoConfig] = useState(() => {
+    const saved = localStorage.getItem('renkoConfig')
+    if (saved) {
+      try { return JSON.parse(saved) } catch (e) {}
+    }
+    return { method: 'traditional', boxSize: 10, atrLength: 14 }
+  })
+  const renkoConfigRef = useRef(renkoConfig)
+  renkoConfigRef.current = renkoConfig
+
   // --- Helper: refresh chart with new data ---
   const refreshChart = useCallback((candles, style) => {
     const tfSec = TF_SECONDS[tfRef.current] || 60  // use ref — no dep on tf
@@ -668,7 +681,7 @@ export default function ChartPanel({
       candleBufferRef.current[bufKey] = { ...lastCandle }
     }
 
-    const transformed = transformData(aggregated, style)
+    const transformed = transformData(aggregated, style, renkoConfigRef.current)
     updateActiveSeries(transformed, style)
 
     // Reset price scale auto-scale so new symbol fits perfectly!
@@ -834,12 +847,16 @@ export default function ChartPanel({
     }
 
     const style = chartStyle
-    const transformed = transformData(uniqueCandles, style)
+    const isStyleChange = prevStyleRef.current !== style
+    prevStyleRef.current = style
+
+    const transformed = transformData(uniqueCandles, style, renkoConfig)
     const activeSeries = getActiveSeries()
     if (!activeSeries) return
 
-    // High performance check: is this a live tick updating the last candle, or a full symbol load?
-    const isTickUpdate = loadedDataRef.current &&
+    // High performance check: is this a live tick updating the last candle, or a full symbol load / style change?
+    const isTickUpdate = !isStyleChange &&
+                         loadedDataRef.current &&
                          loadedDataRef.current.length === uniqueCandles.length &&
                          loadedDataRef.current[loadedDataRef.current.length - 1]?.time === uniqueCandles[uniqueCandles.length - 1]?.time
 
@@ -850,10 +867,14 @@ export default function ChartPanel({
       // Direct tick update (super fast, prevents whole chart redraw and strategy marker flickering)
       const lastCandle = transformed[transformed.length - 1]
       if (lastCandle) {
-        activeSeries.update(lastCandle)
+        try {
+          activeSeries.update(lastCandle)
+        } catch (err) {
+          updateActiveSeries(transformed, style)
+        }
       }
     } else {
-      // Full candles load or new candle open (calls setData)
+      // Full candles load, style switch, or new candle open (calls setData)
       updateActiveSeries(transformed, style)
     }
 
@@ -1172,12 +1193,12 @@ export default function ChartPanel({
   }, [activeSymbol, tf, refreshChart])  // refreshChart is stable (no tf/style dep)
 
 
-  // --- Style change -> re-transform already-aggregated data (no fetch, no re-aggregate) ---
+  // --- Style or Renko config change -> re-transform already-aggregated data ---
   useEffect(() => {
     if (!loadedDataRef.current.length) return
-    const transformed = transformData(loadedDataRef.current, chartStyle)
+    const transformed = transformData(loadedDataRef.current, chartStyle, renkoConfig)
     updateActiveSeries(transformed, chartStyle)
-  }, [chartStyle, updateActiveSeries])
+  }, [chartStyle, renkoConfig, updateActiveSeries])
 
   // --- Real-time tick -----------------------
   useEffect(() => {
@@ -1868,6 +1889,20 @@ export default function ChartPanel({
           </>
         )}
 
+        {chartStyle === 'renko' && (
+          <button
+            onClick={() => setRenkoModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-semibold bg-[#1e222d] text-[#4f9cf9] border border-[#2962ff]/40 hover:bg-[#2962ff]/20 transition-colors whitespace-nowrap ml-2 shadow-sm"
+            title="Renko Chart Settings"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            <span>Renko Settings ({renkoConfig.method === 'atr' ? `ATR ${renkoConfig.atrLength}` : `Box ${renkoConfig.boxSize}`})</span>
+          </button>
+        )}
+
         <div className="ml-auto flex gap-1" />
       </div>
 
@@ -2285,6 +2320,17 @@ export default function ChartPanel({
           </button>
         </div>
       )}
+
+      {/* -- Renko Settings Modal ---------------------- */}
+      <RenkoSettingsModal
+        isOpen={renkoModalOpen}
+        onClose={() => setRenkoModalOpen(false)}
+        config={renkoConfig}
+        onSave={(newCfg) => {
+          setRenkoConfig(newCfg)
+          localStorage.setItem('renkoConfig', JSON.stringify(newCfg))
+        }}
+      />
     </div>
   )
 }

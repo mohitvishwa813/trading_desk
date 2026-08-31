@@ -1260,6 +1260,72 @@ function convertToHeikinAshi(candles) {
   return haCandles;
 }
 
+function convertToRenko(candles, brickSize = 10) {
+  if (!candles || candles.length === 0) return [];
+  const bricks = [];
+  let lastTime = 0;
+  const getNextTime = (rawTime) => {
+    let t = typeof rawTime === 'number' ? rawTime : 0;
+    if (isNaN(t) || t === 0) t = lastTime + 1;
+    t = Math.max(t, lastTime + 1);
+    lastTime = t;
+    return t;
+  };
+
+  const startPrice = candles[0].close;
+  let pTop = Math.floor(startPrice / brickSize) * brickSize + brickSize;
+  let pBottom = pTop - brickSize;
+  let trend = 'UP';
+
+  for (const c of candles) {
+    const pClose = c.close;
+    if (trend === 'UP') {
+      if (pClose >= pTop + brickSize) {
+        const n = Math.floor((pClose - pTop) / brickSize);
+        for (let i = 0; i < n; i++) {
+          const openPrice = pTop + i * brickSize;
+          const closePrice = openPrice + brickSize;
+          bricks.push({ time: getNextTime(c.time), open: openPrice, high: closePrice, low: openPrice, close: closePrice, volume: c.volume || 0 });
+        }
+        pTop = pTop + n * brickSize;
+        pBottom = pTop - brickSize;
+      } else if (pClose <= pBottom - brickSize) {
+        trend = 'DOWN';
+        const n = Math.floor((pBottom - pClose) / brickSize);
+        for (let i = 0; i < n; i++) {
+          const openPrice = pBottom - i * brickSize;
+          const closePrice = openPrice - brickSize;
+          bricks.push({ time: getNextTime(c.time), open: openPrice, high: openPrice, low: closePrice, close: closePrice, volume: c.volume || 0 });
+        }
+        pBottom = pBottom - n * brickSize;
+        pTop = pBottom + brickSize;
+      }
+    } else {
+      if (pClose <= pBottom - brickSize) {
+        const n = Math.floor((pBottom - pClose) / brickSize);
+        for (let i = 0; i < n; i++) {
+          const openPrice = pBottom - i * brickSize;
+          const closePrice = openPrice - brickSize;
+          bricks.push({ time: getNextTime(c.time), open: openPrice, high: openPrice, low: closePrice, close: closePrice, volume: c.volume || 0 });
+        }
+        pBottom = pBottom - n * brickSize;
+        pTop = pBottom + brickSize;
+      } else if (pClose >= pTop + brickSize) {
+        trend = 'UP';
+        const n = Math.floor((pClose - pTop) / brickSize);
+        for (let i = 0; i < n; i++) {
+          const openPrice = pTop + i * brickSize;
+          const closePrice = openPrice + brickSize;
+          bricks.push({ time: getNextTime(c.time), open: openPrice, high: closePrice, low: openPrice, close: closePrice, volume: c.volume || 0 });
+        }
+        pTop = pTop + n * brickSize;
+        pBottom = pTop - brickSize;
+      }
+    }
+  }
+  return bricks;
+}
+
 // Background auto trade processing loop
 async function processAutoTrades() {
   try {
@@ -1291,6 +1357,8 @@ async function processAutoTrades() {
 
       if (session.candle_style === 'heikin_ashi') {
         candles = convertToHeikinAshi(candles);
+      } else if (session.candle_style === 'renko') {
+        candles = convertToRenko(candles);
       }
 
       // 4. Run strategy code on server
