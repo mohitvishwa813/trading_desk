@@ -306,7 +306,7 @@ export function run(candles, code) {
       return adxArr
     },
     requestHigherTF: (symbol, targetTf, seriesFn) => {
-      const tfMap = { '1m': 1, '3m': 3, '5m': 5, '10m': 10, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440 };
+      const tfMap = { '1s': 1/60, '3s': 3/60, '5s': 5/60, '10s': 10/60, '30s': 30/60, '1m': 1, '3m': 3, '5m': 5, '10m': 10, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440 };
       const currentTfSec = candles[1] && candles[0] ? (candles[1].time - candles[0].time) : 300;
       const chartTfMin = Math.round(currentTfSec / 60) || 5;
       const targetTfMin = tfMap[targetTf] || 15;

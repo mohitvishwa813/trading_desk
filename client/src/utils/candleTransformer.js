@@ -66,14 +66,6 @@ export function transformRenko(candles, config = 10) {
   const bricks = [];
   let lastTime = 0;
 
-  const getNextTime = (rawTime) => {
-    let t = typeof rawTime === 'number' ? rawTime : (typeof rawTime === 'string' ? Math.floor(new Date(rawTime).getTime() / 1000) : 0);
-    if (isNaN(t) || t === 0) t = lastTime + 1;
-    t = Math.max(t, lastTime + 1);
-    lastTime = t;
-    return t;
-  };
-
   // --- Formal State Machine Initialization ---
   // Grid price alignment: align start price to nearest multiple of brickSize
   const startPrice = candles[0].close;
@@ -83,6 +75,21 @@ export function transformRenko(candles, config = 10) {
 
   for (const c of candles) {
     const pClose = c.close;
+    let baseTime = typeof c.time === 'number' ? c.time : (typeof c.time === 'string' ? Math.floor(new Date(c.time).getTime() / 1000) : 0);
+    if (isNaN(baseTime) || baseTime === 0) baseTime = lastTime + 1;
+
+    const pushBrick = (openPrice, closePrice, highPrice, lowPrice, subIdx) => {
+      let bTime = Math.max(lastTime + 1, baseTime + subIdx);
+      lastTime = bTime;
+      bricks.push({
+        time: bTime,
+        open: openPrice,
+        high: highPrice,
+        low: lowPrice,
+        close: closePrice,
+        volume: c.volume || 0
+      });
+    };
 
     if (trend === 'UP') {
       // 1. Upward Continuation
@@ -91,14 +98,7 @@ export function transformRenko(candles, config = 10) {
         for (let i = 0; i < n; i++) {
           const openPrice = pTop + i * brickSize;
           const closePrice = openPrice + brickSize;
-          bricks.push({
-            time: getNextTime(c.time),
-            open: openPrice,
-            high: closePrice,
-            low: openPrice,
-            close: closePrice,
-            volume: c.volume || 0
-          });
+          pushBrick(openPrice, closePrice, closePrice, openPrice, i);
         }
         pTop = pTop + n * brickSize;
         pBottom = pTop - brickSize;
@@ -110,14 +110,7 @@ export function transformRenko(candles, config = 10) {
         for (let i = 0; i < n; i++) {
           const openPrice = pBottom - i * brickSize;
           const closePrice = openPrice - brickSize;
-          bricks.push({
-            time: getNextTime(c.time),
-            open: openPrice,
-            high: openPrice,
-            low: closePrice,
-            close: closePrice,
-            volume: c.volume || 0
-          });
+          pushBrick(openPrice, closePrice, openPrice, closePrice, i);
         }
         pBottom = pBottom - n * brickSize;
         pTop = pBottom + brickSize;
@@ -129,14 +122,7 @@ export function transformRenko(candles, config = 10) {
         for (let i = 0; i < n; i++) {
           const openPrice = pBottom - i * brickSize;
           const closePrice = openPrice - brickSize;
-          bricks.push({
-            time: getNextTime(c.time),
-            open: openPrice,
-            high: openPrice,
-            low: closePrice,
-            close: closePrice,
-            volume: c.volume || 0
-          });
+          pushBrick(openPrice, closePrice, openPrice, closePrice, i);
         }
         pBottom = pBottom - n * brickSize;
         pTop = pBottom + brickSize;
@@ -148,14 +134,7 @@ export function transformRenko(candles, config = 10) {
         for (let i = 0; i < n; i++) {
           const openPrice = pTop + i * brickSize;
           const closePrice = openPrice + brickSize;
-          bricks.push({
-            time: getNextTime(c.time),
-            open: openPrice,
-            high: closePrice,
-            low: openPrice,
-            close: closePrice,
-            volume: c.volume || 0
-          });
+          pushBrick(openPrice, closePrice, closePrice, openPrice, i);
         }
         pTop = pTop + n * brickSize;
         pBottom = pTop - brickSize;

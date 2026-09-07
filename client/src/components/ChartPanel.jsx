@@ -13,11 +13,14 @@ import { run as runStrategy } from '../utils/strategyRunner'
 
 // --- Constants ------------------------------
 const TF_SECONDS = {
+  '1s': 1, '3s': 3, '5s': 5, '10s': 10, '30s': 30,
   '1m': 60, '3m': 180, '5m': 300, '10m': 600,
   '15m': 900, '30m': 1800, '1h': 3600, '2h': 7200,
   '4h': 14400, '1d': 86400, '1w': 604800, '1month': 2592000,
 }
-const TIMEFRAMES = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1month']
+const RENKO_SUB_TIMEFRAMES = ['1s', '3s', '5s', '10s', '30s']
+const STANDARD_TIMEFRAMES = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1month']
+const TIMEFRAMES = STANDARD_TIMEFRAMES
 const MIN_PANEL_HEIGHT = 28
 const MAX_PANEL_HEIGHT = 150
 
@@ -666,6 +669,7 @@ export default function ChartPanel({
   })
   const renkoConfigRef = useRef(renkoConfig)
   renkoConfigRef.current = renkoConfig
+  const prevRenkoBricksRef = useRef([])
 
   // --- Helper: refresh chart with new data ---
   const refreshChart = useCallback((candles, style) => {
@@ -853,6 +857,24 @@ export default function ChartPanel({
     const transformed = transformData(uniqueCandles, style, renkoConfig)
     const activeSeries = getActiveSeries()
     if (!activeSeries) return
+
+    // Smooth incremental updates for Renko bricks to prevent screen flickering/blinking
+    if (style === 'renko' && !isStyleChange && prevRenkoBricksRef.current && prevRenkoBricksRef.current.length > 0) {
+      const prevBricks = prevRenkoBricksRef.current
+      if (transformed.length >= prevBricks.length) {
+        try {
+          for (let i = Math.max(0, prevBricks.length - 1); i < transformed.length; i++) {
+            activeSeries.update(transformed[i])
+          }
+          prevRenkoBricksRef.current = transformed
+          loadedDataRef.current = uniqueCandles
+          return
+        } catch (err) {
+          // Fallback to updateActiveSeries if incremental update encounters an error
+        }
+      }
+    }
+    prevRenkoBricksRef.current = transformed
 
     // High performance check: is this a live tick updating the last candle, or a full symbol load / style change?
     const isTickUpdate = !isStyleChange &&
@@ -1193,6 +1215,13 @@ export default function ChartPanel({
   }, [activeSymbol, tf, refreshChart])  // refreshChart is stable (no tf/style dep)
 
 
+  // --- Safety guard: fallback to standard 1m timeframe if switching away from Renko ---
+  useEffect(() => {
+    if (chartStyle !== 'renko' && RENKO_SUB_TIMEFRAMES.includes(tf)) {
+      setTF('1m')
+    }
+  }, [chartStyle, tf, setTF])
+
   // --- Style or Renko config change -> re-transform already-aggregated data ---
   useEffect(() => {
     if (!loadedDataRef.current.length) return
@@ -1304,7 +1333,7 @@ export default function ChartPanel({
       }
     }
 
-    if (isCandleSeries(style)) {
+    if (isCandleSeries(style) && style !== 'renko') {
       candleSeriesRef.current?.update(candle)
     } else if (isBarSeries(style)) {
       barSeriesRef.current?.update(candle)
@@ -1518,7 +1547,11 @@ export default function ChartPanel({
           title: p.name || '',
           priceLineVisible: false,
         })
-        series.setData(p.data)
+        const sortedPlotData = [...(p.data || [])]
+          .filter(item => item && item.time !== undefined && item.time !== null)
+          .sort((a, b) => (typeof a.time === 'number' ? a.time : 0) - (typeof b.time === 'number' ? b.time : 0))
+
+        series.setData(sortedPlotData)
         strategySeriesRefs.current.push(series)
       })
     }
@@ -1526,7 +1559,7 @@ export default function ChartPanel({
     // 3. Render strategy signals on the active series
     if (activeSeries) {
       if (showSignals && strategySignals && strategySignals.length > 0) {
-        const markers = strategySignals.map(sig => {
+        const rawMarkers = strategySignals.map(sig => {
           const type = sig.type?.toUpperCase()
           const opts = sig.options || {}
           const labelStyle = opts.style || 'arrow'
@@ -1564,7 +1597,12 @@ export default function ChartPanel({
           }
           return null
         }).filter(Boolean)
-        activeSeries.setMarkers(markers)
+
+        const sortedMarkers = rawMarkers
+          .filter(m => m && m.time !== undefined && m.time !== null)
+          .sort((a, b) => (typeof a.time === 'number' ? a.time : 0) - (typeof b.time === 'number' ? b.time : 0))
+
+        activeSeries.setMarkers(sortedMarkers)
       } else {
         // Only clear markers if they were set by strategy (or generally clear them if no strategy active)
         activeSeries.setMarkers([])
@@ -1862,14 +1900,14 @@ export default function ChartPanel({
     >
       {/* -- Toolbar (Timeframe, TickerStrip) --------------------------- */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border-b border-border shrink-0 overflow-x-auto select-none">
-        {TIMEFRAMES.map(t => (
+        {(chartStyle === 'renko' ? [...RENKO_SUB_TIMEFRAMES, ...STANDARD_TIMEFRAMES] : STANDARD_TIMEFRAMES).map(t => (
           <button
             key={t}
             className={`px-2 py-0.5 rounded text-[11px] border transition-colors whitespace-nowrap ${tf === t
                 ? 'bg-accent border-accent text-white font-bold'
                 : 'bg-transparent border-border text-muted hover:border-accent'
               }`}
-            onClick={() => handleTFChange(t)}
+            onClick={() => setTF(t)}
           >
             {t}
           </button>
