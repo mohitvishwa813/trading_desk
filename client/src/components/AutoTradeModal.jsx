@@ -174,6 +174,15 @@ export default function AutoTradeModal({
                 disabled={autoTradeState?.active}
                 className="w-full bg-[#0d0f19] border border-[#222533] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-[#7c6af7] transition-all disabled:opacity-60"
               >
+                {((autoTradeState?.active ? autoTradeState.candleStyle : chartStyle) === 'renko') && (
+                  <>
+                    <option value="1s">1 second</option>
+                    <option value="3s">3 seconds</option>
+                    <option value="5s">5 seconds</option>
+                    <option value="10s">10 seconds</option>
+                    <option value="30s">30 seconds</option>
+                  </>
+                )}
                 <option value="1m">1 minute</option>
                 <option value="3m">3 minutes</option>
                 <option value="5m">5 minutes</option>

@@ -22,6 +22,11 @@ function getMarketOpenOffset(symbol, instrumentKey) {
 function aggregateCandles(candles, tf, symbol = '', instrumentKey = '') {
   // Convert timeframe string to seconds
   const tfMap = {
+    '1s': 1,
+    '3s': 3,
+    '5s': 5,
+    '10s': 10,
+    '30s': 30,
     '1m': 60,
     '3m': 180,
     '5m': 300,
