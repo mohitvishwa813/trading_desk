@@ -21,13 +21,60 @@ const db = createClient({
   authToken: process.env.TURSO_DB_TOKEN || 'dummy'
 });
 
-// Database Migration: ensure user_settings has the risk_manager column
+// Database Schema Verification & Index Optimization
 (async () => {
   try {
-    await db.execute('ALTER TABLE user_settings ADD COLUMN risk_manager TEXT');
-    console.log('✓ Database schema check: risk_manager column verified');
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS user_settings (
+        user_id TEXT PRIMARY KEY,
+        watchlist TEXT,
+        ticker TEXT,
+        paper_positions TEXT,
+        risk_manager TEXT,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    await db.execute('ALTER TABLE user_settings ADD COLUMN risk_manager TEXT').catch(() => {});
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS paper_trades (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        qty INTEGER NOT NULL,
+        price REAL NOT NULL,
+        status TEXT NOT NULL,
+        pnl REAL DEFAULT 0.0,
+        created_at TEXT NOT NULL,
+        closed_at TEXT,
+        comment TEXT
+      );
+    `);
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS auto_trades (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        strategy_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        qty INTEGER NOT NULL,
+        timeframe TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        active INTEGER DEFAULT 1,
+        last_signal_time INTEGER,
+        created_at TEXT NOT NULL,
+        stopped_at TEXT,
+        candle_style TEXT DEFAULT 'candles'
+      );
+    `);
+    // Indexes to prevent Turso full table scans and eliminate row-read spikes
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(user_id, status)').catch(() => {});
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(user_id, status)').catch(() => {});
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_auto_trades_active ON auto_trades(active)').catch(() => {});
+    console.log('✓ Database schema & performance indexes verified');
   } catch (err) {
-    // Column already exists or table not ready, safely continue
+    console.warn('Database schema check warning:', err.message);
   }
 })();
 
@@ -1327,7 +1374,11 @@ function convertToRenko(candles, brickSize = 10) {
 }
 
 // Background auto trade processing loop
+let autoTradeErrorBackoffUntil = 0;
+
 async function processAutoTrades() {
+  if (Date.now() < autoTradeErrorBackoffUntil) return;
+
   try {
     const activeResult = await db.execute('SELECT * FROM auto_trades WHERE active = 1');
     if (activeResult.rows.length === 0) return;
@@ -1380,11 +1431,12 @@ async function processAutoTrades() {
 
       // 6. Find all fresh, un-executed signals chronologically
       if (result.signals && result.signals.length > 0) {
-        const lastCandleTime = candles[candles.length - 1].time;
+        const lastCandle = candles[candles.length - 1];
+        const lastCandleTime = lastCandle ? lastCandle.time : 0;
 
         const pendingSignals = result.signals.filter(sig => {
-          // A. Signal must be fresh (within 2 minutes of the last candle time)
-          if (sig.time < lastCandleTime - 120) return false;
+          // A. Signal must be fresh (within 300s of the last candle time or latest candle)
+          if (lastCandleTime && sig.time < lastCandleTime - 300) return false;
           // B. Signal time must be greater than or equal to last executed time
           if (sig.time < tracker.lastTime) return false;
           // C. If signal matches the last executed time, skip if already executed or if memory tracker was just reinitialized (prevents double triggers on server restart)
@@ -1632,6 +1684,8 @@ async function processAutoTrades() {
     }
   } catch (err) {
     console.error('Error in processAutoTrades:', err.message);
+    // Backoff 60 seconds if database error or blocked to prevent quota spamming
+    autoTradeErrorBackoffUntil = Date.now() + 60000;
   }
 }
 
@@ -2538,6 +2592,7 @@ app.post('/api/user/settings', authenticateToken, async (req, res) => {
     )`;
 
     await db.execute(sql);
+    userSettingsCache.lastFetched = 0; // invalidate cache immediately
 
     res.json({ success: true });
   } catch (err) {
@@ -2730,12 +2785,20 @@ async function forceExitAllPositions(userId, maxLoss) {
   }
 }
 
+let riskCheckErrorBackoffUntil = 0;
+let userSettingsCache = { data: null, lastFetched: 0 };
+
 async function checkGlobalRiskLimits() {
+  if (Date.now() < riskCheckErrorBackoffUntil) return;
+
   try {
-    // 1. Fetch all user configurations that have settings
-    const usersRes = await db.execute('SELECT user_id, paper_positions, risk_manager FROM user_settings');
+    // 1. Fetch user configurations with 30s cache to eliminate repetitive table scans
+    if (!userSettingsCache.data || (Date.now() - userSettingsCache.lastFetched > 30000)) {
+      const usersRes = await db.execute('SELECT user_id, paper_positions, risk_manager FROM user_settings');
+      userSettingsCache = { data: usersRes.rows, lastFetched: Date.now() };
+    }
     
-    for (const row of usersRes.rows) {
+    for (const row of (userSettingsCache.data || [])) {
       const userId = row.user_id;
       let riskManager = { enabled: false, maxLoss: 100 };
       try {
@@ -2746,6 +2809,7 @@ async function checkGlobalRiskLimits() {
         continue;
       }
 
+      // If Risk Manager is NOT enabled for this user, DO NOT query trades or paper_trades
       if (!riskManager.enabled || !riskManager.maxLoss || riskManager.maxLoss <= 0) {
         continue;
       }
@@ -2754,7 +2818,7 @@ async function checkGlobalRiskLimits() {
       let totalFloatingPnl = 0;
       let hasActivePositions = false;
 
-      // A. Calculate Floating P&L from manual paper trades JSON
+      // A. Calculate Floating P&L from manual paper trades JSON (In-memory, 0 DB reads)
       let manualPositions = [];
       try {
         if (row.paper_positions) {
@@ -2775,7 +2839,7 @@ async function checkGlobalRiskLimits() {
 
       // B. Calculate Floating P&L from auto paper trades database rows
       const openAutoRes = await db.execute({
-        sql: "SELECT * FROM paper_trades WHERE user_id = ? AND status = 'OPEN'",
+        sql: "SELECT symbol, direction, price, qty FROM paper_trades WHERE user_id = ? AND status = 'OPEN'",
         args: [userId]
       });
 
@@ -2791,7 +2855,7 @@ async function checkGlobalRiskLimits() {
 
       // C. Calculate Floating P&L from live trades database rows
       const openLiveRes = await db.execute({
-        sql: "SELECT * FROM trades WHERE user_id = ? AND status = 'OPEN'",
+        sql: "SELECT symbol, direction, price, qty FROM trades WHERE user_id = ? AND status = 'OPEN'",
         args: [userId]
       });
 
@@ -2812,6 +2876,8 @@ async function checkGlobalRiskLimits() {
     }
   } catch (err) {
     console.error('Error in checkGlobalRiskLimits:', err.message);
+    // Backoff 60 seconds on DB error to prevent continuous hammering
+    riskCheckErrorBackoffUntil = Date.now() + 60000;
   }
 }
 
