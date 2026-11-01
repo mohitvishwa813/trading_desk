@@ -500,8 +500,10 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('tickerItems_v4', JSON.stringify(tickerItems))
-    if (isAuthenticated) {
+    if (!isAuthenticated) return
+    const timer = setTimeout(() => {
       const token = localStorage.getItem('token')
+      if (!token) return
       fetch('/api/user/settings', {
         method: 'POST',
         headers: {
@@ -510,7 +512,8 @@ export default function App() {
         },
         body: JSON.stringify({ ticker: tickerItems })
       }).catch(err => console.error('Error saving ticker items:', err))
-    }
+    }, 1000)
+    return () => clearTimeout(timer)
   }, [tickerItems, isAuthenticated])
 
   // ── Styles (lifted from ChartPanel to control globally in header) ──
@@ -654,8 +657,10 @@ export default function App() {
   // ── Persist watchlist ──
   useEffect(() => {
     localStorage.setItem('watchlistItems', JSON.stringify(watchlistItems))
-    if (isAuthenticated) {
+    if (!isAuthenticated) return
+    const timer = setTimeout(() => {
       const token = localStorage.getItem('token')
+      if (!token) return
       fetch('/api/user/settings', {
         method: 'POST',
         headers: {
@@ -664,7 +669,8 @@ export default function App() {
         },
         body: JSON.stringify({ watchlist: watchlistItems })
       }).catch(err => console.error('Error saving watchlist:', err))
-    }
+    }, 1000)
+    return () => clearTimeout(timer)
   }, [watchlistItems, isAuthenticated])
 
   // ── Resizable sidebar ──

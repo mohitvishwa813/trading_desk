@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import StrategyEditor from './StrategyEditor'
 
 const LS_KEY = 'upstox_paper_positions'
-const LS_TAB  = 'sidebar_tab'
+const LS_TAB = 'sidebar_tab'
 
 function loadPositions() {
   try {
@@ -49,7 +49,7 @@ export default function Sidebar({
 
   const switchTab = (tab) => {
     setActiveTab(tab)
-    try { localStorage.setItem(LS_TAB, tab) } catch {}
+    try { localStorage.setItem(LS_TAB, tab) } catch { }
   }
 
 
@@ -65,11 +65,10 @@ export default function Sidebar({
         <button
           id="sidebar-tab-trade"
           onClick={() => switchTab('trade')}
-          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${
-            activeTab === 'trade'
+          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${activeTab === 'trade'
               ? 'text-accent'
               : 'text-muted hover:text-[#e2e8f0]'
-          }`}
+            }`}
         >
           Trade
           {activeTab === 'trade' && (
@@ -81,11 +80,10 @@ export default function Sidebar({
         <button
           id="sidebar-tab-terminal"
           onClick={() => switchTab('terminal')}
-          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${
-            activeTab === 'terminal'
+          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${activeTab === 'terminal'
               ? 'text-accent'
               : 'text-muted hover:text-[#e2e8f0]'
-          }`}
+            }`}
         >
           Terminal
           {activeTab === 'terminal' && (
@@ -97,11 +95,10 @@ export default function Sidebar({
         <button
           id="sidebar-tab-log"
           onClick={() => switchTab('log')}
-          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${
-            activeTab === 'log'
+          className={`flex-1 h-full py-2.5 text-[11px] font-bold tracking-widest uppercase transition-colors duration-150 relative ${activeTab === 'log'
               ? 'text-accent'
               : 'text-muted hover:text-[#e2e8f0]'
-          }`}
+            }`}
         >
           Log
           {activeTab === 'log' && (
@@ -121,7 +118,7 @@ export default function Sidebar({
             width="14" height="14" viewBox="0 0 14 14" fill="none"
             style={{ transform: sidebarCollapsed ? 'rotate(180deg)' : 'none', transition: 'transform 200ms ease' }}
           >
-            <path d="M9 3L5 7L9 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M9 3L5 7L9 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
       </div>
@@ -140,9 +137,9 @@ export default function Sidebar({
             getInstrumentKey={getInstrumentKey}
           />
         ) : activeTab === 'terminal' ? (
-          <StrategyEditor 
-            activeSymbol={activeSymbol} 
-            onStrategyResult={onStrategyResult} 
+          <StrategyEditor
+            activeSymbol={activeSymbol}
+            onStrategyResult={onStrategyResult}
             chartTimeframe={chartTimeframe}
             onTimeframeChange={onTimeframeChange}
             chartStyle={chartStyle}
@@ -288,7 +285,7 @@ function TradeJournal({ trades, loading, prices, activeSymbol, price }) {
                 {t.direction}
               </span>
             </div>
-            
+
             <div className="flex justify-between text-[10px] text-muted">
               <span>Qty: {t.qty}</span>
               <span>Entry: {t.price.toFixed(2)}</span>
@@ -310,7 +307,7 @@ function TradeJournal({ trades, loading, prices, activeSymbol, price }) {
                 )
               )}
             </div>
-            
+
             {t.comment && (
               <div className="text-[9px] text-indigo-300 mt-1 italic leading-tight">
                 {t.comment}
@@ -364,13 +361,12 @@ function ModeToggle({ value, onChange }) {
   const btn = (label, mode) => (
     <button
       onClick={() => onChange(value === mode ? null : mode)}
-      className={`flex-1 py-1.5 rounded text-xs font-bold transition-colors ${
-        value === mode
+      className={`flex-1 py-1.5 rounded text-xs font-bold transition-colors ${value === mode
           ? mode === 'paper'
             ? 'bg-accent text-white'
             : 'bg-green text-white'
           : 'bg-[#0d0f14] border border-border text-muted hover:text-[#e2e8f0]'
-      }`}
+        }`}
     >
       {label}
     </button>
@@ -407,45 +403,15 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
     })
       .then(res => res.json())
       .then(data => {
-        if (data.paper_positions) {
+        if (data.paper_positions && Array.isArray(data.paper_positions)) {
           setPositions(data.paper_positions)
+          savePositions(data.paper_positions)
         }
       })
       .catch(err => console.error('Error fetching paper positions:', err))
   }, [tradesRefreshKey])
 
-  // Save to localStorage and database on update
-  useEffect(() => {
-    savePositions(positions)
-    
-    const token = localStorage.getItem('token')
-    if (!token) return
-
-    fetch('/api/user/settings', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify({ paper_positions: positions })
-    }).catch(err => console.error('Error saving paper positions:', err))
-  }, [positions])
-
-  useEffect(() => {
-    if (!prices || Object.keys(prices).length === 0) return
-    setPositions(prev =>
-      prev.map(p => {
-        const key = getInstrumentKey ? getInstrumentKey(p.symbol) : p.symbol;
-        const livePrice = prices[key] || prices[p.symbol] || prices[p.symbol.toUpperCase()] || p.ltp;
-        return {
-          ...p,
-          ltp: livePrice,
-        };
-      })
-    )
-  }, [prices, getInstrumentKey])
-
-  const priceDisabled   = orderType === 'Market' || orderType === 'SL-M'
+  const priceDisabled = orderType === 'Market' || orderType === 'SL-M'
   const triggerDisabled = orderType === 'Market' || orderType === 'Limit'
   const rr = useMemoRR(stopLoss, target, price)
 
@@ -457,14 +423,26 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
     placeOrder({ side: 'SELL', tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, setPositions, onSendAlert, prices, tick, getInstrumentKey })
   }, [tradingMode, qty, orderType, limitPrice, triggerPrice, product, stopLoss, target, activeSymbol, price, positions, onSendAlert, prices, tick, getInstrumentKey])
 
-  const closePosition = useCallback((id) => {
+  const closePosition = useCallback((id, liveExitPrice) => {
     setPositions(prev => {
       const pos = prev.find(p => p.id === id)
       if (!pos) return prev
-      const pnl = calcPnl(pos)
+      const exitPrice = liveExitPrice || pos.avgPrice
+      const pnl = pos.qty > 0 ? (exitPrice - pos.avgPrice) * pos.qty : (pos.avgPrice - exitPrice) * Math.abs(pos.qty)
       const msg = `Closed ${pos.symbol} × ${Math.abs(pos.qty)} — P&L: ₹${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`
       onSendAlert('INFO', msg)
-      return prev.filter(p => p.id !== id)
+      const next = prev.filter(p => p.id !== id)
+      savePositions(next)
+
+      const token = localStorage.getItem('token')
+      if (token) {
+        fetch('/api/user/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ paper_positions: next })
+        }).catch(err => console.error('Error saving paper positions:', err))
+      }
+      return next
     })
   }, [onSendAlert])
 
@@ -563,7 +541,7 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
 
       {/* Open Positions (Paper only) */}
       {tradingMode === 'paper' && (
-        <OpenPositions positions={positions} onClose={closePosition} />
+        <OpenPositions positions={positions} onClose={closePosition} prices={prices} getInstrumentKey={getInstrumentKey} />
       )}
     </div>
   )
@@ -572,7 +550,7 @@ function TradingForm({ tradingMode, activeSymbol, price, prices, tick, instrumen
 /* ================================================================== */
 /*  OPEN POSITIONS TABLE                                                */
 /* ================================================================== */
-function OpenPositions({ positions, onClose }) {
+function OpenPositions({ positions, onClose, prices, getInstrumentKey }) {
   if (!positions || positions.length === 0) {
     return <div className="text-[11px] text-muted pt-1">No open positions</div>
   }
@@ -596,18 +574,20 @@ function OpenPositions({ positions, onClose }) {
           </thead>
           <tbody>
             {positions.map(pos => {
-              const pnl = calcPnl(pos)
+              const key = getInstrumentKey ? getInstrumentKey(pos.symbol) : pos.symbol;
+              const livePrice = (prices && (prices[key] || prices[pos.symbol] || prices[pos.symbol.toUpperCase()])) || pos.avgPrice;
+              const pnl = pos.qty > 0 ? (livePrice - pos.avgPrice) * pos.qty : (pos.avgPrice - livePrice) * Math.abs(pos.qty);
               return (
                 <tr key={pos.id} className="border-b border-border/50">
                   <td className="pr-1 py-1.5 text-[#e2e8f0] truncate max-w-[60px]">{pos.symbol}</td>
                   <td className="px-1 py-1.5 text-right font-mono">{pos.qty}</td>
                   <td className="px-1 py-1.5 text-right font-mono">{pos.avgPrice.toFixed(1)}</td>
-                  <td className="px-1 py-1.5 text-right font-mono">{pos.ltp?.toFixed(1) ?? '—'}</td>
+                  <td className="px-1 py-1.5 text-right font-mono">{livePrice.toFixed(1)}</td>
                   <td className={`px-1 py-1.5 text-right font-mono ${pnl >= 0 ? 'text-green' : 'text-red'}`}>
                     {pnl >= 0 ? '+' : ''}{pnl.toFixed(1)}
                   </td>
                   <td className="pl-1 py-1.5 text-right">
-                    <button onClick={() => onClose(pos.id)}
+                    <button onClick={() => onClose(pos.id, livePrice)}
                       className="text-[10px] text-muted hover:text-red transition-colors">
                       Close
                     </button>
@@ -632,11 +612,11 @@ function calcPnl(pos) {
 }
 
 function calcRR(sl, target, price) {
-  const slNum     = parseFloat(sl)
+  const slNum = parseFloat(sl)
   const targetNum = parseFloat(target)
-  const priceNum  = parseFloat(price)
+  const priceNum = parseFloat(price)
   if (!slNum || !targetNum || !priceNum) return null
-  const risk   = Math.abs(slNum)
+  const risk = Math.abs(slNum)
   const reward = Math.abs(targetNum)
   if (risk === 0) return null
   return (reward / risk).toFixed(1)
@@ -673,13 +653,24 @@ async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, trigg
       symbol: activeSymbol,
       qty: side === 'BUY' ? qtyNum : -qtyNum,
       avgPrice: fillPrice,
-      ltp: fillPrice,
       product,
       timestamp: new Date().toISOString(),
       stopLoss,
       target,
     }
-    setPositions(prev => [...prev, pos])
+    setPositions(prev => {
+      const next = [...prev, pos]
+      savePositions(next)
+      const token = localStorage.getItem('token')
+      if (token) {
+        fetch('/api/user/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ paper_positions: next })
+        }).catch(err => console.error('Error saving paper positions:', err))
+      }
+      return next
+    })
     onSendAlert(side, `${side} ${qtyNum} ${activeSymbol} @ ₹${fillPrice.toFixed(2)} (Paper)`)
     return
   }
@@ -699,9 +690,9 @@ async function placeOrder({ side, tradingMode, qty, orderType, limitPrice, trigg
   onSendAlert('INFO', `[LIVE] Placing ${side} order…`)
 
   try {
-    const res    = await fetch('/api/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const res = await fetch('/api/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     const result = await res.json()
-    const msg    = result.success
+    const msg = result.success
       ? `[LIVE] ${side} ${qtyNum} ${activeSymbol} — ${result.orderId ? 'Order #' + result.orderId : 'Placed'}`
       : `[LIVE] ${side} failed: ${result.error || 'Unknown error'}`
     onSendAlert(result.success ? side : 'INFO', msg)
@@ -765,15 +756,15 @@ function parseAlertTradeDetails(message) {
 function calculateGroupPnL(alerts) {
   // Sort oldest first
   const sorted = [...alerts].sort((a, b) => new Date(a.timestamp || a.time) - new Date(b.timestamp || b.time));
-  
+
   let position = 0;
   let avgPrice = 0;
   let totalRealizedPnL = 0;
-  
+
   for (const al of sorted) {
     const trade = parseAlertTradeDetails(al.message);
     if (!trade) continue;
-    
+
     const isClose = al.message.toLowerCase().includes('close') || trade.side === 'CLOSE_ALL';
     let { side, qty, price } = trade;
     if (side === 'CLOSE') {
@@ -789,7 +780,7 @@ function calculateGroupPnL(alerts) {
       position = 0;
       continue;
     }
-    
+
     if (position === 0) {
       if (isClose) continue; // Ignore orphaned close alerts
       position = side === 'BUY' ? qty : -qty;
@@ -820,14 +811,14 @@ function calculateGroupPnL(alerts) {
 function calculateGroupOpenPosition(alerts) {
   // Sort oldest first
   const sorted = [...alerts].sort((a, b) => new Date(a.timestamp || a.time) - new Date(b.timestamp || b.time));
-  
+
   let position = 0;
   let avgPrice = 0;
-  
+
   for (const al of sorted) {
     const trade = parseAlertTradeDetails(al.message);
     if (!trade) continue;
-    
+
     const isClose = al.message.toLowerCase().includes('close') || trade.side === 'CLOSE_ALL';
     let { side, qty, price } = trade;
     if (side === 'CLOSE') {
@@ -838,7 +829,7 @@ function calculateGroupOpenPosition(alerts) {
       position = 0;
       continue;
     }
-    
+
     if (position === 0) {
       if (isClose) continue; // Ignore orphaned close alerts
       position = side === 'BUY' ? qty : -qty;
@@ -859,7 +850,7 @@ function calculateGroupOpenPosition(alerts) {
       }
     }
   }
-  
+
   if (position !== 0) {
     return {
       side: position > 0 ? 'BUY' : 'SELL',
@@ -893,7 +884,7 @@ function AlertLog({ alerts, prices = {} }) {
   todayAlerts.forEach(a => {
     const dateStr = a.timestamp ? new Date(a.timestamp).toLocaleDateString() : 'System';
     const key = a.tradeId || `nogroup-${dateStr}-${a.symbol || 'SYSTEM'}`;
-    
+
     if (!grouped[key]) {
       grouped[key] = {
         key,
@@ -917,7 +908,7 @@ function AlertLog({ alerts, prices = {} }) {
   });
 
   const pillMap = {
-    BUY:  'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+    BUY: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     SELL: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
     INFO: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
   };
@@ -939,8 +930,8 @@ function AlertLog({ alerts, prices = {} }) {
     const openPos = calculateGroupOpenPosition(g.alerts);
     if (!openPos) return sum;
     const livePrice = prices[g.symbol] || openPos.avgPrice;
-    const unrealized = openPos.side === 'BUY' 
-      ? (livePrice - openPos.avgPrice) * openPos.qty 
+    const unrealized = openPos.side === 'BUY'
+      ? (livePrice - openPos.avgPrice) * openPos.qty
       : (openPos.avgPrice - livePrice) * openPos.qty;
     return sum + unrealized;
   }, 0);
@@ -967,8 +958,8 @@ function AlertLog({ alerts, prices = {} }) {
     let unrealizedPnL = 0;
     if (openPos) {
       const livePrice = prices[group.symbol] || openPos.avgPrice;
-      unrealizedPnL = openPos.side === 'BUY' 
-        ? (livePrice - openPos.avgPrice) * openPos.qty 
+      unrealizedPnL = openPos.side === 'BUY'
+        ? (livePrice - openPos.avgPrice) * openPos.qty
         : (openPos.avgPrice - livePrice) * openPos.qty;
     }
 
@@ -988,12 +979,12 @@ function AlertLog({ alerts, prices = {} }) {
     }
 
     return (
-      <div 
+      <div
         key={group.key}
         className="border border-[#1f2332] rounded-lg overflow-hidden bg-[#0d0f17] transition-all duration-200"
       >
         {/* Accordion Header */}
-        <div 
+        <div
           onClick={() => toggleGroup(group.key)}
           className="flex items-center justify-between px-3 py-2.5 cursor-pointer bg-[#10121e] hover:bg-[#151928] transition-colors"
         >
@@ -1005,20 +996,18 @@ function AlertLog({ alerts, prices = {} }) {
               {group.symbol} {avgTradePrice !== null && `@ ₹${avgTradePrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}
             </span>
             {openPos && (
-              <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded animate-pulse border ${
-                unrealizedPnL >= 0 
-                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+              <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded animate-pulse border ${unrealizedPnL >= 0
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                   : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
-              }`}>
+                }`}>
                 LIVE: {unrealizedPnL >= 0 ? '+' : ''}₹{unrealizedPnL.toFixed(2)}
               </span>
             )}
             {groupPnL !== 0 && (
-              <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded border ${
-                groupPnL > 0 
-                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+              <span className={`text-[9px] font-extrabold font-mono px-1.5 py-0.5 rounded border ${groupPnL > 0
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                   : 'bg-rose-500/10 text-rose-400 border border-[#ff1744]/20'
-              }`}>
+                }`}>
                 REALIZED: {groupPnL > 0 ? '+' : ''}₹{groupPnL.toFixed(2)}
               </span>
             )}
@@ -1030,7 +1019,7 @@ function AlertLog({ alerts, prices = {} }) {
             <span className="text-[9px] text-[#5b5e70] font-mono">
               {group.latestTime ? new Date(group.latestTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false }) : ''}
             </span>
-            <svg 
+            <svg
               width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
               className={`text-muted transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
             >
@@ -1044,17 +1033,17 @@ function AlertLog({ alerts, prices = {} }) {
           <div className="px-3 py-2 border-t border-[#181a26]/50 bg-[#08090f]/50 space-y-2 relative">
             {/* Timeline vertical bar */}
             <div className="absolute left-[20px] top-3 bottom-3 w-[1.5px] bg-[#1d2133]" />
-            
+
             {group.alerts.map((al, idx) => {
               const isTradeAlert = al.signal === 'BUY' || al.signal === 'SELL';
-              
+
               return (
                 <div key={idx} className="flex gap-3 text-[11px] leading-relaxed relative pl-1">
                   {/* Timeline dot */}
                   <div className="w-[10px] h-[10px] rounded-full bg-[#181a26] border-2 border-[#30364d] mt-1 shrink-0 z-10 flex items-center justify-center">
                     {isTradeAlert && <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7]" />}
                   </div>
-                  
+
                   {/* Alert message body */}
                   <div className="flex-1 min-w-0">
                     <div className="text-slate-300 font-mono text-[10.5px]">
@@ -1082,13 +1071,12 @@ function AlertLog({ alerts, prices = {} }) {
             <span className="text-[10px] text-[#808290] font-bold uppercase tracking-wider block">Today's Total P&L</span>
             <span className="text-[9px] text-[#4f5260] block">Realized + Live Unrealized P&L</span>
           </div>
-          <div className={`text-sm font-extrabold font-mono px-2.5 py-1 rounded border ${
-            totalPnL > 0 
-              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-              : totalPnL < 0 
-                ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+          <div className={`text-sm font-extrabold font-mono px-2.5 py-1 rounded border ${totalPnL > 0
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+              : totalPnL < 0
+                ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
                 : 'bg-[#181b28] text-slate-400 border-[#242838]'
-          }`}>
+            }`}>
             {totalPnL > 0 ? '+' : ''}₹{totalPnL.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>

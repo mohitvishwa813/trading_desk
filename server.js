@@ -119,6 +119,7 @@ const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const wss = new WebSocket.Server({ noServer: true });
 
 let upstoxWS = null;
+let upstoxRetryDelay = 5000;
 const browserClients = new Set();
 let instrumentsLoaded = false;
 let tickCount = 0;
@@ -558,6 +559,7 @@ async function connectUpstox() {
 
     upstoxWS.on('open', () => {
       console.log('✅ Connected to Upstox WebSocket');
+      upstoxRetryDelay = 5000; // Reset backoff delay on successful connection
       // Wait 1s before subscribing (per Upstox official Node.js example)
       setTimeout(sendUpstoxSubscription, 1000);
     });
@@ -585,9 +587,11 @@ async function connectUpstox() {
     });
 
     upstoxWS.on('close', () => {
-      console.log('🔄 Upstox WS closed — reconnecting in 5s...');
+      const delay = upstoxRetryDelay;
+      upstoxRetryDelay = Math.min(Math.round(upstoxRetryDelay * 1.5), 60000);
+      console.log(`🔄 Upstox WS closed — reconnecting in ${(delay / 1000).toFixed(0)}s...`);
       clearInterval(tickHeartbeat);
-      setTimeout(connectUpstox, 5000);
+      setTimeout(connectUpstox, delay);
     });
 
     // Periodic heartbeat to show live data is flowing
@@ -602,10 +606,11 @@ async function connectUpstox() {
     }, 30000);
 
     upstoxWS.on('error', (err) => {
-      console.error('Upstox WS error:', err.message);
-      console.error('   Full error:', err);
-      if (err.code) console.error('   Code:', err.code);
-      if (err.response) console.error('   Response:', err.response);
+      if (err.message && err.message.includes('503')) {
+        console.warn(`⚠️  Upstox Feeder Gateway returned 503 (Service Unavailable / markets closed). Will retry with backoff.`);
+      } else {
+        console.error('Upstox WS error:', err.message);
+      }
     });
   } catch (err) {
     const status = err.response?.status;
@@ -623,7 +628,9 @@ async function connectUpstox() {
       console.error('   🌐 Network error — check your internet connection');
     }
 
-    setTimeout(connectUpstox, 5000);
+    const delay = upstoxRetryDelay;
+    upstoxRetryDelay = Math.min(Math.round(upstoxRetryDelay * 1.5), 60000);
+    setTimeout(connectUpstox, delay);
   }
 }
 
@@ -1684,8 +1691,8 @@ async function processAutoTrades() {
     }
   } catch (err) {
     console.error('Error in processAutoTrades:', err.message);
-    // Backoff 60 seconds if database error or blocked to prevent quota spamming
-    autoTradeErrorBackoffUntil = Date.now() + 60000;
+    // Backoff 5 minutes if database error or blocked to prevent quota spamming
+    autoTradeErrorBackoffUntil = Date.now() + 300000;
   }
 }
 
@@ -2592,7 +2599,22 @@ app.post('/api/user/settings', authenticateToken, async (req, res) => {
     )`;
 
     await db.execute(sql);
-    userSettingsCache.lastFetched = 0; // invalidate cache immediately
+    if (userSettingsCache.data) {
+      const existingIdx = userSettingsCache.data.findIndex(u => u.user_id === req.user.id);
+      const updatedRow = {
+        user_id: req.user.id,
+        watchlist: finalWatchlist,
+        ticker: finalTicker,
+        paper_positions: finalPaperPositions,
+        risk_manager: finalRiskManager,
+        updated_at: new Date().toISOString()
+      };
+      if (existingIdx >= 0) {
+        userSettingsCache.data[existingIdx] = updatedRow;
+      } else {
+        userSettingsCache.data.push(updatedRow);
+      }
+    }
 
     res.json({ success: true });
   } catch (err) {
@@ -2792,8 +2814,8 @@ async function checkGlobalRiskLimits() {
   if (Date.now() < riskCheckErrorBackoffUntil) return;
 
   try {
-    // 1. Fetch user configurations with 30s cache to eliminate repetitive table scans
-    if (!userSettingsCache.data || (Date.now() - userSettingsCache.lastFetched > 30000)) {
+    // 1. Fetch user configurations with 60s cache to eliminate repetitive table scans
+    if (!userSettingsCache.data || (Date.now() - userSettingsCache.lastFetched > 60000)) {
       const usersRes = await db.execute('SELECT user_id, paper_positions, risk_manager FROM user_settings');
       userSettingsCache = { data: usersRes.rows, lastFetched: Date.now() };
     }
@@ -2876,8 +2898,8 @@ async function checkGlobalRiskLimits() {
     }
   } catch (err) {
     console.error('Error in checkGlobalRiskLimits:', err.message);
-    // Backoff 60 seconds on DB error to prevent continuous hammering
-    riskCheckErrorBackoffUntil = Date.now() + 60000;
+    // Backoff 5 minutes on DB error to prevent continuous hammering
+    riskCheckErrorBackoffUntil = Date.now() + 300000;
   }
 }
 
